@@ -10,10 +10,10 @@ Official implementation of Prompting with the Future (RSS 2025). We provide a de
 ### Requirements for running the demo
 
 ```
-git clone https://github.com/prompting-with-the-future/prompting-with-the-future.git
+git clone https://github.com/cornell-grill/Prompting-with-Future-Reward.git
 cd prompting-with-the-future
 conda env create --file environment.yaml
-conda activate pwf
+conda activate pwfr
 pip install --upgrade mani_skill
 conda install pytorch3d -c pytorch3d
 ```
