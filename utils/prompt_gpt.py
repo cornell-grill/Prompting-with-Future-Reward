@@ -2,11 +2,8 @@ import requests
 import os
 import numpy as np
 import base64
+from utils.api_key import api_key
 
-
-# OpenAI API Key
-# api_key = None
-api_key = ""
 headers = {
   "Content-Type": "application/json",
   "Authorization": f"Bearer {api_key}"
