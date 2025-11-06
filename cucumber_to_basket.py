@@ -1,5 +1,6 @@
 """ This file currently moves the gripper to grasp a cumber using state-based reward """
 import os
+import sys
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,7 +34,7 @@ def robo4d_parse():
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--try_release", action="store_true")
     parser.add_argument("--replan", action="store_true")
-    parser.add_argument("--debug", action="store_false")
+    parser.add_argument("--testing", action="store_true")
     return parser
 
 parser = robo4d_parse()
@@ -99,10 +100,85 @@ plane_action_dimensions = [[0, 2], [1, 2], [0, 2], [0, 1]]
 mesh_world = MeshWorld(scene_name, num_envs=args.num_sample_actions, scene_traslation=-np.array(robot_translation), radius=radius, \
                        image_size=image_size, record_video=args.record_video, robot_uids=robot_uids, need_render=True, dir=output_path, \
                         close_gripper=close_gripper, cameras_config=cameras_config)
-if(args.debug):
+if args.testing:
+    # gather info from the mesh world and print a nicely formatted summary of all actors
     mesh_info = mesh_world.get_info()
     print('--- scene loaded ---')
-    print(mesh_info)
+
+    # Gripper position (env 0)
+    gripper = mesh_info.get('gripper_position', None)
+    if gripper is not None and len(gripper) > 0:
+        try:
+            gp = gripper[0]
+            print(f'Gripper position (env 0): {gp}')
+        except Exception:
+            print('Gripper position: (unavailable)')
+    else:
+        print('Gripper position: (unavailable)')
+
+    print('\nObjects in scene:')
+    print(f"{'ID':>3}  {'Name':<30} {'Position (x,y,z)':<40} {'Quat (w,x,y,z)'}")
+    print('-' * 100)
+
+    obj_poses = mesh_info.get('object_poses', [])
+    for idx, obj in enumerate(mesh_world.env.unwrapped.objects):
+        # try a few ways to get a human-friendly name
+        name = None
+        try:
+            name = getattr(obj, 'name', None)
+            if name is None:
+                # some objects expose get_name()
+                name = obj.get_name() if hasattr(obj, 'get_name') else None
+        except Exception:
+            name = None
+        if name is None:
+            name = str(obj)
+
+        # try to read the pose from mesh_info; object_poses stores per-object arrays
+        pos = '(unknown)'
+        quat = '(unknown)'
+        try:
+            if idx < len(obj_poses):
+                pose_arr = obj_poses[idx]
+                # pose_arr shape is (num_envs, >=7) -- take env 0
+                if hasattr(pose_arr, 'shape') and pose_arr.shape[0] > 0:
+                    p0 = pose_arr[0]
+                    # p0: [x,y,z, qw,qx,qy,qz, ...] or similar
+                    pos = tuple([float(x) for x in p0[:3]])
+                    quat = tuple([float(x) for x in p0[3:7]])
+        except Exception:
+            pass
+
+        # Try to obtain collision mesh and compute axis-aligned bounding box (in world frame)
+        bbox_text = '(bbox unavailable)'
+        try:
+            # many ManiSkill Actor wrappers expose get_first_collision_mesh()
+            if hasattr(obj, 'get_first_collision_mesh'):
+                col_mesh = obj.get_first_collision_mesh(to_world_frame=True)
+            else:
+                # some wrappers may expose get_collision_meshes()
+                col_mesh = None
+                if hasattr(obj, 'get_collision_meshes'):
+                    meshes = obj.get_collision_meshes(to_world_frame=True, first_only=True)
+                    col_mesh = meshes
+
+            if col_mesh is not None:
+                # trimesh.Trimesh provides bounds as (min, max)
+                if hasattr(col_mesh, 'bounds'):
+                    mins, maxs = col_mesh.bounds
+                    extents = maxs - mins
+                    center = (mins + maxs) / 2.0
+                    center_f = ','.join([f'{float(x):.3f}' for x in center])
+                    extents_f = ','.join([f'{float(x):.3f}' for x in extents])
+                    bbox_text = f'center=({center_f}) extents=({extents_f})'
+        except Exception:
+            bbox_text = '(bbox error)'
+
+        print(f'{idx:3d}  {str(name):<30.30}  {str(pos):<40}  {str(quat)}  {bbox_text}')
+
+    print('\n(End of scene summary)')
+    # exit after printing test info
+    sys.exit(0)
 
 success = False
 trajectory = []

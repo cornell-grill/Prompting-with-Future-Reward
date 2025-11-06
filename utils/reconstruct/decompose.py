@@ -172,7 +172,7 @@ if __name__ == "__main__":
         mesh = coacd.Mesh(mesh.vertices, mesh.faces)
         result = coacd.run_coacd(
             mesh,
-            threshold=0.1,
+            threshold=0.05,
             max_convex_hull=-1,
             preprocess_mode=args.preprocess_mode,
             preprocess_resolution=50,
