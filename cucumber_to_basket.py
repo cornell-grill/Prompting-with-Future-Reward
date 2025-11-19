@@ -18,6 +18,48 @@ from gaussians.gaussian_world import GaussianWorld
 
 from pytorch3d.renderer import look_at_view_transform
 
+from utils.state_context import get_state_context
+import json
+
+
+def _to_serializable(obj):
+    """Small JSON serializer for numpy and torch types."""
+    try:
+        import numpy as _np
+    except Exception:
+        _np = None
+    try:
+        import torch as _torch
+    except Exception:
+        _torch = None
+
+    # basic python types
+    if obj is None or isinstance(obj, (str, bool, int, float)):
+        return obj
+
+    # numpy scalar
+    if _np is not None and isinstance(obj, _np.generic):
+        return obj.item()
+
+    # numpy array
+    if _np is not None and isinstance(obj, _np.ndarray):
+        return obj.tolist()
+
+    # torch tensor
+    if _torch is not None and isinstance(obj, _torch.Tensor):
+        try:
+            return obj.detach().cpu().numpy().tolist()
+        except Exception:
+            return obj.detach().cpu().tolist()
+
+    # fallback for lists/dicts (usually fine), else stringify
+    if isinstance(obj, (list, dict)):
+        return obj
+    try:
+        return list(obj)
+    except Exception:
+        return str(obj)
+
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
     parser.add_argument("--scene_name", type=str, default="basket_world")
@@ -178,6 +220,11 @@ if args.testing:
 
     print('\n(End of scene summary)')
     # exit after printing test info
+
+    state = get_state_context(mesh_world)
+    save_path = os.path.join(output_path, 'scene_context.json')
+    with open(save_path, 'w') as f:
+        json.dump(state, f, indent=2, sort_keys=True, default=_to_serializable)
     sys.exit(0)
 
 success = False
