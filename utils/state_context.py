@@ -1,5 +1,28 @@
 from meshes.mesh_world import MeshWorld
 import numpy as np
+import os
+import json
+
+def save_env_states(mesh_world, filename, env_state_log_dir, context=None, max_envs=None):
+    """Write per-environment states to env_state_logs_dir/<filename>.jsonl."""
+    if mesh_world is None or env_state_log_dir is None:
+        return
+    os.makedirs(env_state_log_dir, exist_ok=True)
+    total_envs = getattr(mesh_world, 'num_envs', 1)
+    max_envs = total_envs if max_envs is None else min(max_envs, total_envs)
+    log_path = os.path.join(env_state_log_dir, f"{filename}.jsonl")
+    with open(log_path, "w") as fp:
+        for env_idx in range(max_envs):
+            record = {
+                "env_idx": env_idx,
+                "context": context or filename,
+            }
+            try:
+                record["state"] = get_state_context(mesh_world, env_idx=env_idx)
+            except Exception as exc:
+                record["error"] = str(exc)
+            fp.write(json.dumps(record))
+            fp.write("\n")
 
 def get_state_context(mesh_world : MeshWorld, env_idx=0):
 	"""Return a JSON-serializable dict describing the current scene state.
@@ -17,7 +40,6 @@ def get_state_context(mesh_world : MeshWorld, env_idx=0):
 	try:
 		gp = infos.get('gripper_position', None)
 		if gp is not None and len(gp) > env_idx:
-			# This is the first position out of 81 in gp. Unusure if it is the ideal selection.
 			gripper_pos = [float(x) for x in gp[env_idx]]
 	except Exception:
 		gripper_pos = None
@@ -28,11 +50,9 @@ def get_state_context(mesh_world : MeshWorld, env_idx=0):
 		for obj in mesh_world.env.unwrapped.objects:
 			try:
 				grasping = mesh_world.agent.is_grasping(obj, min_force=getattr(mesh_world, 'min_force', 0.1), max_angle=getattr(mesh_world, 'max_angle', 80))
-				# grasping may be a tensor/array of length num_envs
 				if grasping is None:
 					continue
-				val = bool(int(grasping[env_idx].cpu().numpy()))
-				if val:
+				if grasping[env_idx].cpu().numpy():
 					is_gripping = True
 					gripped_object = obj.name
 					break
