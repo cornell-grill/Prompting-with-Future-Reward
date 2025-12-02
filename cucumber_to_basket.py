@@ -19,7 +19,7 @@ from gaussians.gaussian_world import GaussianWorld
 from pytorch3d.renderer import look_at_view_transform
 
 from utils.state_context import get_state_context, save_env_states
-from utils.reward import compute_reward, determine_subgoal_stage
+from utils.reward import compute_reward, determine_subgoal_stage, determine_success
 
 
 def robo4d_parse():
@@ -182,19 +182,10 @@ while len(trajectory) <= args.total_steps:
     print(f'Current subgoal: {current_subgoal}')
     
     # Check for task success (all subgoals completed)
-    if current_subgoal == 3:
-        # Check if cucumber is in basket and released
-        cucumber = current_state_context.get('objects', {}).get('cucumber')
-        basket = current_state_context.get('objects', {}).get('basket')
-        gripper = current_state_context.get('gripper', {})
-        
-        from utils.reward import check_cucumber_in_basket
-        if (cucumber and basket and 
-            check_cucumber_in_basket(cucumber, basket) and 
-            not gripper.get('is_grasping', False)):
-            print('!!! Success !!!')
-            success = True
-            break
+    if determine_success(current_state_context):
+        print('!!! Success !!!')
+        success = True
+        break
 
     # Check if we should release (using reward-based decision)
     # This happens before CEM if we're already grasping and in subgoal 3

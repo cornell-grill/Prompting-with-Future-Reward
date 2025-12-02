@@ -2,6 +2,9 @@ import numpy as np
 
 
 def euclid_distance(a, b):
+    """
+    Compute the Euclidean distance between two points input as lists or tuples.
+    """
     a = np.array(a)
     b = np.array(b)
     return float(np.linalg.norm(a - b))
@@ -148,7 +151,13 @@ def within_object(obj, other):
     
     return in_x and in_y and in_z
 
+def keep_gripper_closed():
+    """Return True if the gripper should be closed for the whole manipulation process."""
+    return False
 
+
+def subgoal_length():
+    return 3
 def determine_subgoal_stage(state_context):
     """Determine current subgoal stage based on state.
     
@@ -205,6 +214,24 @@ def determine_subgoal_stage(state_context):
     # Stage 2: Grasping cucumber but not yet over basket
     return 2
 
+def determine_success(state_context):
+    """Determine if the task is successful based on the state.
+    
+    Args:
+        state_context: Current state context dict
+    
+    Returns:
+        bool: True if the task is successful, False otherwise
+    """
+    if state_context is None:
+        return False
+    
+    cucumber = state_context.get('objects', {}).get('cucumber')
+    basket = state_context.get('objects', {}).get('basket')
+    gripper = state_context.get('gripper', {})
+
+    return cucumber and basket and \
+        within_object(cucumber, basket) and not gripper['is_grasping']
 
 def compute_reward(state_context, prev_state_context, subgoal_stage):
     """Compute reward for a given state based on current subgoal.
