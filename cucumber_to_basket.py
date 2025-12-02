@@ -18,47 +18,9 @@ from gaussians.gaussian_world import GaussianWorld
 
 from pytorch3d.renderer import look_at_view_transform
 
-from utils.state_context import get_state_context
-import json
+from utils.state_context import get_state_context, save_env_states
+from utils.reward import compute_reward, determine_subgoal_stage
 
-
-def _to_serializable(obj):
-    """Small JSON serializer for numpy and torch types."""
-    try:
-        import numpy as _np
-    except Exception:
-        _np = None
-    try:
-        import torch as _torch
-    except Exception:
-        _torch = None
-
-    # basic python types
-    if obj is None or isinstance(obj, (str, bool, int, float)):
-        return obj
-
-    # numpy scalar
-    if _np is not None and isinstance(obj, _np.generic):
-        return obj.item()
-
-    # numpy array
-    if _np is not None and isinstance(obj, _np.ndarray):
-        return obj.tolist()
-
-    # torch tensor
-    if _torch is not None and isinstance(obj, _torch.Tensor):
-        try:
-            return obj.detach().cpu().numpy().tolist()
-        except Exception:
-            return obj.detach().cpu().tolist()
-
-    # fallback for lists/dicts (usually fine), else stringify
-    if isinstance(obj, (list, dict)):
-        return obj
-    try:
-        return list(obj)
-    except Exception:
-        return str(obj)
 
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
@@ -91,6 +53,9 @@ FoV = 60
 output_path = os.path.join('results', f'{"naive_reward"}/{args.scene_name}/{args.name}')
 if not os.path.exists(output_path):
     os.makedirs(output_path)
+
+state_out_path = os.path.join(output_path, "env_state_logs")
+os.makedirs(state_out_path, exist_ok=True)
 
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
@@ -142,90 +107,6 @@ plane_action_dimensions = [[0, 2], [1, 2], [0, 2], [0, 1]]
 mesh_world = MeshWorld(scene_name, num_envs=args.num_sample_actions, scene_traslation=-np.array(robot_translation), radius=radius, \
                        image_size=image_size, record_video=args.record_video, robot_uids=robot_uids, need_render=True, dir=output_path, \
                         close_gripper=close_gripper, cameras_config=cameras_config)
-if args.testing:
-    # gather info from the mesh world and print a nicely formatted summary of all actors
-    mesh_info = mesh_world.get_info()
-    print('--- scene loaded ---')
-
-    # Gripper position (env 0)
-    gripper = mesh_info.get('gripper_position', None)
-    if gripper is not None and len(gripper) > 0:
-        try:
-            gp = gripper[0]
-            print(f'Gripper position (env 0): {gp}')
-        except Exception:
-            print('Gripper position: (unavailable)')
-    else:
-        print('Gripper position: (unavailable)')
-
-    print('\nObjects in scene:')
-    print(f"{'ID':>3}  {'Name':<30} {'Position (x,y,z)':<40} {'Quat (w,x,y,z)'}")
-    print('-' * 100)
-
-    obj_poses = mesh_info.get('object_poses', [])
-    for idx, obj in enumerate(mesh_world.env.unwrapped.objects):
-        # try a few ways to get a human-friendly name
-        name = None
-        try:
-            name = getattr(obj, 'name', None)
-            if name is None:
-                # some objects expose get_name()
-                name = obj.get_name() if hasattr(obj, 'get_name') else None
-        except Exception:
-            name = None
-        if name is None:
-            name = str(obj)
-
-        # try to read the pose from mesh_info; object_poses stores per-object arrays
-        pos = '(unknown)'
-        quat = '(unknown)'
-        try:
-            if idx < len(obj_poses):
-                pose_arr = obj_poses[idx]
-                # pose_arr shape is (num_envs, >=7) -- take env 0
-                if hasattr(pose_arr, 'shape') and pose_arr.shape[0] > 0:
-                    p0 = pose_arr[0]
-                    # p0: [x,y,z, qw,qx,qy,qz, ...] or similar
-                    pos = tuple([float(x) for x in p0[:3]])
-                    quat = tuple([float(x) for x in p0[3:7]])
-        except Exception:
-            pass
-
-        # Try to obtain collision mesh and compute axis-aligned bounding box (in world frame)
-        bbox_text = '(bbox unavailable)'
-        try:
-            # many ManiSkill Actor wrappers expose get_first_collision_mesh()
-            if hasattr(obj, 'get_first_collision_mesh'):
-                col_mesh = obj.get_first_collision_mesh(to_world_frame=True)
-            else:
-                # some wrappers may expose get_collision_meshes()
-                col_mesh = None
-                if hasattr(obj, 'get_collision_meshes'):
-                    meshes = obj.get_collision_meshes(to_world_frame=True, first_only=True)
-                    col_mesh = meshes
-
-            if col_mesh is not None:
-                # trimesh.Trimesh provides bounds as (min, max)
-                if hasattr(col_mesh, 'bounds'):
-                    mins, maxs = col_mesh.bounds
-                    extents = maxs - mins
-                    center = (mins + maxs) / 2.0
-                    center_f = ','.join([f'{float(x):.3f}' for x in center])
-                    extents_f = ','.join([f'{float(x):.3f}' for x in extents])
-                    bbox_text = f'center=({center_f}) extents=({extents_f})'
-        except Exception:
-            bbox_text = '(bbox error)'
-
-        print(f'{idx:3d}  {str(name):<30.30}  {str(pos):<40}  {str(quat)}  {bbox_text}')
-
-    print('\n(End of scene summary)')
-    # exit after printing test info
-
-    state = get_state_context(mesh_world)
-    save_path = os.path.join(output_path, 'scene_context.json')
-    with open(save_path, 'w') as f:
-        json.dump(state, f, indent=2, sort_keys=True, default=_to_serializable)
-    sys.exit(0)
 
 success = False
 trajectory = []
@@ -266,8 +147,17 @@ view_id = args.camera_view_id
 object_states = []
 object_transformations = []
 
+# Initialize state tracking for reward-based evaluation
+initial_state_context = get_state_context(mesh_world, env_idx=0)
+prev_state_context = initial_state_context.copy()
+save_env_states(mesh_world, "initial_state", state_out_path, context={"phase": "initial"})
+
+current_subgoal = determine_subgoal_stage(initial_state_context)
+
 while len(trajectory) <= args.total_steps:
     grasp = release = False
+    step_idx = max(len(trajectory) - 1, 0)
+    save_env_states(mesh_world, f"step_{step_idx}_state_start", state_out_path, context={"phase": "loop_start", "step": step_idx})
 
     # render the current state
     robot_images, robot_depth_images = mesh_world.get_image_depth()
@@ -285,45 +175,52 @@ while len(trajectory) <= args.total_steps:
     for i in range(len(current_images)):
         plt.imsave(f'{output_path}/{len(trajectory)}_view_{i + 1}.png', current_images[i])
 
-    # TODO: get success criteria (distance and grasp?)
-    if mesh_world.grasping_now:
-        print('!!! Success !!!')
-        break
+    # Update current subgoal based on state
+    current_state_context = get_state_context(mesh_world, env_idx=0)
+    save_env_states(mesh_world, f"step_{step_idx}_current_state", state_out_path, context={"phase": "current_state", "step": step_idx})
+    current_subgoal = determine_subgoal_stage(current_state_context)
+    print(f'Current subgoal: {current_subgoal}')
+    
+    # Check for task success (all subgoals completed)
+    if current_subgoal == 3:
+        # Check if cucumber is in basket and released
+        cucumber = current_state_context.get('objects', {}).get('cucumber')
+        basket = current_state_context.get('objects', {}).get('basket')
+        gripper = current_state_context.get('gripper', {})
+        
+        from utils.reward import check_cucumber_in_basket
+        if (cucumber and basket and 
+            check_cucumber_in_basket(cucumber, basket) and 
+            not gripper.get('is_grasping', False)):
+            print('!!! Success !!!')
+            success = True
+            break
 
-    # TODO: Have stages stored as a variable
-    stage = 1
-    subgoal_id = stage - 1
-
-    # sample release action
-    if mesh_world.grasping_now:
+    # Check if we should release (using reward-based decision)
+    # This happens before CEM if we're already grasping and in subgoal 3
+    if mesh_world.grasping_now and current_subgoal == 3:
+        # Simulate release to check reward
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.release()
-
-        current_robot_images, current_robot_depths = robot_images, robot_depth_images
-
-        rgbmaps, depthmaps, alphamaps = gaussian_world.render(R_gaussian_fixed, T_gaussian_fixed, image_size, -FoV / 180.0 * np.pi, device, object_states=action_object_transformations[0], rotate_num=4)
-        depthmaps[np.where(depthmaps == 0)] = zfar
-        current_robot_depths[np.where(current_robot_depths == 0)] = zfar
-
-        current_robot_images = current_robot_images[:, 0, ...]
-        current_robot_depths = current_robot_depths[:, 0, ..., 0]
-
-        robot_mask = np.where((np.any(current_robot_images != 0, axis=-1)) * (current_robot_depths < depthmaps), 1, 0)
-        current_images = np.where(robot_mask[:, :, :, None], current_robot_images, rgbmaps)
-
-        encoded_images = []
-        for i in range(len(current_images)):
-            plt.imsave(f'{output_path}/{len(trajectory)}_release_{i + 1}.png', current_images[i])
-
-        # TODO: implement release detections
-        release = False
-
-        if release:
-            print('release!')
+        save_env_states(mesh_world, f"step_{step_idx}_release_preview", state_out_path, context={"phase": "release_preview", "step": step_idx})
+        
+        # Get state after release simulation
+        release_state = get_state_context(mesh_world, env_idx=0)
+        release_reward = compute_reward(release_state, prev_state_context, current_subgoal)
+        
+        # Reset to before release for CEM
+        mesh_world.env.unwrapped.set_state(mesh_world.history_states[-1])
+        
+        # Execute release if reward is high enough
+        if release_reward > 50.0:
+            print(f'Executing release with reward: {release_reward:.2f}')
+            release = True
             output_actions.append('release')
             joint_angles_list, action_object_transformations, root_images, robot_depth_images = mesh_world.release(non_stop=True)
-    
-    if release:
-        continue
+            save_env_states(mesh_world, f"step_{step_idx}_release_execute", state_out_path, context={"phase": "release_execute", "step": step_idx})
+            
+            # Update state and continue
+            prev_state_context = get_state_context(mesh_world, env_idx=0)
+            continue
 
     action_dimenstions = 6
     means = np.zeros(action_dimenstions)
@@ -343,6 +240,9 @@ while len(trajectory) <= args.total_steps:
     covariance = np.zeros((action_dimenstions, action_dimenstions))
     np.fill_diagonal(covariance, variances)
 
+    # Track best grasp action across iterations
+    best_grasp_filtered_idx = None  # Index into filtered grasp array for set_grasp_state
+    
     for iteration in range(args.cem_iteration):
         prev_time = time.time()
         prompt = []
@@ -353,115 +253,218 @@ while len(trajectory) <= args.total_steps:
 
         if not mesh_world.grasping_now:
             joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, grasp_object_transformations, grasp_robot_images, grasp_robot_depth_images, is_grasping = mesh_world.sample_action_distribution_batch(samples, try_grasp=True)
-            if is_grasping.sum():
+            save_env_states(mesh_world, f"step_{step_idx}_iter_{iteration}_try_grasp", state_out_path, context={"phase": "try_grasp_sample", "step": step_idx, "iteration": iteration})
+            
+            # Compute rewards for regular actions
+            rewards = []
+            current_state_before_actions = get_state_context(mesh_world, env_idx=0)
+            
+            # Process regular (non-grasp) actions
+            # Note: We reconstruct from transformations because try_grasp() modifies all environments
+            # after regular actions, so querying would give us states after try_grasp, not after the action
+            for act_id in range(len(action_object_transformations)):
+                # Reconstruct state from transformations (transformations are relative to initial state)
+                mock_state = initial_state_context.copy()
+                
+                if len(action_object_transformations.shape) == 3:
+                    obj_transforms = action_object_transformations[act_id, :, :3].cpu().numpy()
+                    objects = mock_state.get('objects', {})
+                    obj_names = list(objects.keys())
+                    
+                    for obj_idx, obj_name in enumerate(obj_names):
+                        if obj_idx < obj_transforms.shape[0]:
+                            obj = objects.get(obj_name)
+                            if obj:
+                                initial_pos = obj.get('position') or (obj.get('bbox') and obj['bbox'].get('center'))
+                                if initial_pos:
+                                    new_pos = np.array(initial_pos) + obj_transforms[obj_idx]
+                                    obj['position'] = new_pos.tolist()
+                                    if obj.get('bbox'):
+                                        obj['bbox']['center'] = new_pos.tolist()
+                
+                # Update gripper state from current state (for grasping detection)
+                mock_state['gripper'] = current_state_before_actions.get('gripper', mock_state.get('gripper', {}))
+                
+                reward = compute_reward(mock_state, prev_state_context, current_subgoal)
+                rewards.append(reward)
+            
+            # Process grasp actions if any
+            if is_grasping.sum() > 0:
                 print(f'{is_grasping.sum()} could grasp!')
-                grasp_object_transformations = grasp_object_transformations[is_grasping]
-                grasp_robot_images = grasp_robot_images[:, is_grasping]
-                grasp_robot_depth_images = grasp_robot_depth_images[:, is_grasping]
-                rgbmaps, depthmaps, alphamaps = [], [], []
-                for grasp_id in range(len(grasp_object_transformations)):
-                    rgbmap, depthmap, alphamap = gaussian_world.render(R_gaussian_fixed, T_gaussian_fixed, image_size, -FoV / 180.0 * np.pi, device, object_states=grasp_object_transformations[grasp_id], rotate_num=4)
-                    depthmap[np.where(depthmap == 0)] = zfar
-
-                    rgbmaps.append(rgbmap[:])
-                    depthmaps.append(depthmap[:])
-                    alphamaps.append(alphamap[:])
-
-                rgbmaps = np.stack(rgbmaps)
-                depthmaps = np.stack(depthmaps)
-                alphamaps = np.stack(alphamaps)
-
-                rgbmaps = rgbmaps.transpose(1, 0, 2, 3, 4)
-                depthmaps = depthmaps.transpose(1, 0, 2, 3)
-                alphamaps = alphamaps.transpose(1, 0, 2, 3)
-
-                robot_mask = np.where((np.any(grasp_robot_images != 0, axis=-1)) * (grasp_robot_depth_images[..., 0] < depthmaps), 1, 0)
-                images = np.where(robot_mask[:, :, :, :, None], grasp_robot_images, rgbmaps)
-
-                for grasp_id in range(len(grasp_object_transformations)):
-                    img_views = images[:, grasp_id]
-                    # print('img_views: ', img_views.shape)
-                    encoded_images = []
-                    for idx, img in enumerate(img_views):
-                        plt.imsave(f'{output_path}/{len(trajectory)}_{iteration}_grasp_{grasp_id + 1}_view_{idx + 1}.png', img)
-
-                    # change = None
-                    # try_time = 0
-                    # while change is None and try_time < 5:
-                    #     try_time += 1
-                    #     try:
-                    #         content = generate_grasp(encoded_images, grasp_prompt)
-                    #         grasp = get_grasp(content)
-                    #         change = True
-                    #     except Exception as e:
-                    #         print('catched', e)
-                    #         pass
-                    # TODO: Implement logic to decide if we should grasp
-
-                    if grasp:
-                        means = post_samples[is_grasping][grasp_id]
-                        break
-                if grasp:
+                grasp_rewards = []
+                grasp_indices = np.where(is_grasping)[0]
+                
+                for grasp_idx, orig_idx in enumerate(grasp_indices):
+                    # Query actual state from the environment that executed this grasp action
+                    grasp_state = get_state_context(mesh_world, env_idx=orig_idx)
+                    
+                    reward = compute_reward(grasp_state, prev_state_context, current_subgoal)
+                    grasp_rewards.append(reward)
+                
+                # Replace rewards for grasp actions with grasp rewards
+                for grasp_idx, orig_idx in enumerate(grasp_indices):
+                    if orig_idx < len(rewards):
+                        rewards[orig_idx] = grasp_rewards[grasp_idx]
+                
+                # Check if we should execute grasp (highest reward grasp action)
+                best_grasp_idx = np.argmax(grasp_rewards)  # Index into filtered grasp array
+                best_grasp_orig_idx = grasp_indices[best_grasp_idx]  # Original action index
+                best_grasp_reward = grasp_rewards[best_grasp_idx]
+                
+                # Execute grasp if reward is high enough (threshold)
+                if best_grasp_reward > 30.0:  # Threshold for successful grasp
+                    grasp = True
+                    # Store the filtered index (for set_grasp_state) and original index (for CEM update)
+                    best_grasp_filtered_idx = best_grasp_idx  # Index into filtered array for set_grasp_state
+                    means = post_samples[best_grasp_orig_idx]  # Use original index for CEM
+                    print(f'Executing grasp with reward: {best_grasp_reward:.2f}')
                     break
+            
+            rewards = np.array(rewards)
+            
+            # Select elite samples based on reward (top 20%)
+            num_elite = max(1, int(len(rewards) * 0.2))
+            elite_indices = np.argsort(rewards)[-num_elite:]
+            elite_samples = post_samples[elite_indices]
+            
+            # Update CEM distribution
+            means = np.mean(elite_samples, axis=0)
+            covariance = np.cov(elite_samples, rowvar=False)
+            covariance += np.eye(covariance.shape[0]) * 0.01
+            
+            print(f'iteration: {iteration}, max reward: {np.max(rewards):.2f}, mean reward: {np.mean(rewards):.2f}, elite mean: {np.mean(rewards[elite_indices]):.2f}')
+            
+            if grasp:
+                break
 
         elif args.try_release and mesh_world.grasping_now:
             joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.sample_action_distribution_batch(samples, try_release=True)
+            save_env_states(mesh_world, f"step_{step_idx}_iter_{iteration}_try_release", state_out_path, context={"phase": "try_release_sample", "step": step_idx, "iteration": iteration})
 
-            rgbmaps, depthmaps, alphamaps = [], [], []
+            # Compute rewards for release actions
+            rewards = []
+            
             for release_id in range(len(release_object_transformations)):
-                rgbmap, depthmap, alphamap = gaussian_world.render(R_gaussian_fixed, T_gaussian_fixed, image_size, -FoV / 180.0 * np.pi, device, object_states=release_object_transformations[release_id], rotate_num=4)
-                depthmap[np.where(depthmap == 0)] = zfar
-
-                rgbmaps.append(rgbmap[:])
-                depthmaps.append(depthmap[:])
-                alphamaps.append(alphamap[:])
-
-            rgbmaps = np.stack(rgbmaps)
-            depthmaps = np.stack(depthmaps)
-            alphamaps = np.stack(alphamaps)
-
-            rgbmaps = rgbmaps.transpose(1, 0, 2, 3, 4)
-            depthmaps = depthmaps.transpose(1, 0, 2, 3)
-            alphamaps = alphamaps.transpose(1, 0, 2, 3)
-
-            robot_mask = np.where((np.any(release_robot_images != 0, axis=-1)) * (release_robot_depth_images[..., 0] < depthmaps), 1, 0)
-            images = np.where(robot_mask[:, :, :, :, None], release_robot_images, rgbmaps)
-
-            processes = []
-            queue = multiprocessing.Queue()
-            best_of_each_group = []
-            for release_id in range(len(release_object_transformations)):
-                img_views = images[:, release_id]
-                encoded_images = []
-                for idx, img in enumerate(img_views):
-                    plt.imsave(f'{output_path}/{len(trajectory)}_{iteration}_release_{release_id + 1}_view_{idx + 1}.png', img)
-
-            # TODO: release logic
-            #     p = multiprocessing.Process(target=prompt_release_helper, args=(release_id, queue, encoded_images, release_prompt, args))
-            #     processes.append(p)
-            #     p.start()
-
-            # for p in processes:
-            #     p.join()
-
-            # for p in processes:
-            #     release_id, release, content = queue.get()
-
-            #     with open(f'{output_path}/{len(trajectory)}_{iteration}_{release_id + 1}_release.txt', 'w') as f:
-            #         f.write(content)
-            #     if release:
-            #         means = post_samples[release_id]
-            #         print('release!')
-            #         break
+                # Query actual state from the environment that executed this release action
+                release_state = get_state_context(mesh_world, env_idx=release_id)
+                
+                reward = compute_reward(release_state, prev_state_context, current_subgoal)
+                rewards.append(reward)
+            
+            rewards = np.array(rewards)
+            
+            # Check if we should execute release (highest reward release action)
+            best_release_idx = np.argmax(rewards)
+            best_release_reward = rewards[best_release_idx]
+            
+            # Execute release if reward is high enough (threshold for subgoal 3)
+            if best_release_reward > 50.0 and current_subgoal == 3:
+                release = True
+                means = post_samples[best_release_idx]
+                print(f'Executing release with reward: {best_release_reward:.2f}')
+                break
+            
+            # Still update CEM distribution even if not releasing
+            num_elite = max(1, int(len(rewards) * 0.2))
+            elite_indices = np.argsort(rewards)[-num_elite:]
+            elite_samples = post_samples[elite_indices]
+            
+            means = np.mean(elite_samples, axis=0)
+            covariance = np.cov(elite_samples, rowvar=False)
+            covariance += np.eye(covariance.shape[0]) * 0.01
+            
+            print(f'iteration: {iteration}, max reward: {np.max(rewards):.2f}, mean reward: {np.mean(rewards):.2f}')
+            
             if release:
                 break
 
         else:
             joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(samples)
+            save_env_states(mesh_world, f"step_{step_idx}_iter_{iteration}_regular_sample", state_out_path, context={"phase": "regular_sample", "step": step_idx, "iteration": iteration})
+            
+            # Compute rewards for all sampled actions
+            rewards = []
+            current_state_before_actions = get_state_context(mesh_world, env_idx=0)
+            
+            # Query actual states from each environment (try_grasp is not called here, so states are accurate)
+            for act_id in range(len(action_object_transformations)):
+                action_state = get_state_context(mesh_world, env_idx=act_id)
+                
+                reward = compute_reward(action_state, prev_state_context, current_subgoal)
+                rewards.append(reward)
+            
+            rewards = np.array(rewards)
+            
+            # Select elite samples based on reward (top 20%)
+            num_elite = max(1, int(len(rewards) * 0.2))
+            elite_indices = np.argsort(rewards)[-num_elite:]
+            elite_samples = post_samples[elite_indices]
+            
+            # Update CEM distribution
+            means = np.mean(elite_samples, axis=0)
+            covariance = np.cov(elite_samples, rowvar=False)
+            covariance += np.eye(covariance.shape[0]) * 0.01
+            
+            print(f'iteration: {iteration}, max reward: {np.max(rewards):.2f}, mean reward: {np.mean(rewards):.2f}, elite mean: {np.mean(rewards[elite_indices]):.2f}')
 
-
-
-
+    # Execute the best action after CEM iterations
+    joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(means[None], non_stop=True)
+    save_env_states(mesh_world, f"step_{step_idx}_execute", state_out_path, context={"phase": "execute_action", "step": step_idx})
+    
+    # Save actions
+    output_actions.append(joint_angles_list[0].cpu().numpy().tolist())
+    
+    # Handle grasp execution
+    if grasp and best_grasp_filtered_idx is not None:
+        print('grasp!')
+        grasp_id = best_grasp_filtered_idx  # Use filtered index for set_grasp_state
+        grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images = mesh_world.set_grasp_state(grasp_id)
+        save_env_states(mesh_world, f"step_{step_idx}_set_grasp", state_out_path, context={"phase": "set_grasp_state", "step": step_idx})
+        joint_angles_list, action_object_transformations, robot_images, robot_depth_images = grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images,
+        output_actions.append('grasp')
+        output_actions.append(joint_angles_list[0].cpu().numpy().tolist())
+    
+    # Handle release execution
+    if args.try_release and release:
+        print('release!')
+        release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.release(non_stop=True)
+        save_env_states(mesh_world, f"step_{step_idx}_final_release_execute", state_out_path, context={"phase": "final_release_execute", "step": step_idx})
+        joint_angles_list, action_object_transformations, robot_images, robot_depth_images = release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images,
+        output_actions.append('release')
+        output_actions.append(joint_angles_list[0].cpu().numpy().tolist())
+    
+    if args.record_video:
+        mesh_world.env.flush_video()
+    
+    object_transformations = action_object_transformations[0]
+    
+    # Update prev_state_context for next iteration
+    prev_state_context = get_state_context(mesh_world, env_idx=0)
+    
+    # Render and save trajectory frame
+    rgbmaps, depthmaps, alphamaps = gaussian_world.render(R_gaussian_fixed, T_gaussian_fixed, image_size, -FoV / 180.0 * np.pi, device, object_states=object_transformations, rotate_num=4)
+    depthmaps[np.where(depthmaps == 0)] = zfar
+    robot_depth_images[np.where(robot_depth_images == 0)] = zfar
+    
+    robot_images = robot_images[view_id, 0, ...] if len(robot_images.shape) > 3 else robot_images[0, ...]
+    robot_depth_images = robot_depth_images[view_id, 0, ..., 0] if len(robot_depth_images.shape) > 3 else robot_depth_images[0, ..., 0]
+    
+    robot_mask = np.where((np.any(robot_images != 0, axis=-1)) * (robot_depth_images < depthmaps[view_id]), 1, 0)
+    images = np.where(robot_mask[:, :, None], robot_images, rgbmaps[view_id])
+    
+    images = images[:, :, :3] if len(images.shape) == 3 else images
+    
+    # Save trajectory image
+    plt.imsave(f'{output_path}/{len(trajectory)}.png', images)
+    excute_frames.append(images)
+    trajectory.append(joint_angles_list[0])
+    
+    # Update subgoal based on new state
+    current_state_context = get_state_context(mesh_world, env_idx=0)
+    new_subgoal = determine_subgoal_stage(current_state_context)
+    if new_subgoal != current_subgoal:
+        print(f'Subgoal transition: {current_subgoal} -> {new_subgoal}')
+        current_subgoal = new_subgoal
 
 
 
