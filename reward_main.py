@@ -16,6 +16,9 @@ from gaussians.gaussian_world import GaussianWorld
 
 from pytorch3d.renderer import look_at_view_transform
 
+from utils.state_context import get_state_context, save_env_states
+from utils.reward import *
+
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
     parser.add_argument("--scene_name", type=str, default="basket_world")
@@ -45,12 +48,12 @@ zfar = 100
 FoV = 60
 
 if args.scene_name is None:
-    output_path = os.path.join('results', f'{args.instruction}/{args.scene_id}/{args.name}')
+    output_path = os.path.join('results/naive_reward', f'{args.scene_id}/{args.name}')
 else:
-    output_path = os.path.join('results', f'{args.instruction}/{args.scene_name}/{args.name}')
-
-if not os.path.exists(output_path):
-    os.makedirs(output_path)
+    output_path = os.path.join('results/naive_reward', f'{args.scene_name}/{args.name}')
+state_output_path = os.path.join(output_path, 'states')
+if not os.path.exists(state_output_path):
+    os.makedirs(state_output_path)
 
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
@@ -80,21 +83,23 @@ gaussian_world = GaussianWorld(scene_name, parser, post_process=False)
 center = np.array([0, 0, 0])
 radius = gaussian_world.radius * distance
 
-change = None
-close_gripper = False
-times = 0
-while change is None and times < 5:
-    try:
-        times += 1
-        content = generate_close_gripper(close_gripper_prompt)
-        close_gripper = get_close_gripper(content)
-        change = True
-    except Exception as e:
-        print('catched', e)
-        pass
+# TODO: keep this as VLM?
+# change = None
+# close_gripper = False
+# times = 0
+# while change is None and times < 5:
+#     try:
+#         times += 1
+#         content = generate_close_gripper(close_gripper_prompt)
+#         close_gripper = get_close_gripper(content)
+#         change = True
+#     except Exception as e:
+#         print('catched', e)
+#         pass
 
-with open(f'{output_path}/close_gripper_content.txt', 'w') as f:
-    f.write(content)
+# with open(f'{output_path}/close_gripper_content.txt', 'w') as f:
+#     f.write(content)
+close_gripper = KEEP_GRIPPER_CLOSED
 
 if close_gripper:
     print('!!! Keep Gripper Closed !!!')
@@ -168,27 +173,36 @@ for i in range(len(current_images)):
         encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
     encoded_images.append([encoded_image])
 
-subgoals = None
-try_time = 0
-while subgoals is None and try_time < 5:
-    try_time += 1
-    try:
-        content = generate_subgoals(encoded_images, subgoal_prompt)
-        subgoals = get_subgoals(content)
-    except Exception as e:
-        print('catched', e)
-        pass
+print ("current state contexts")
+current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+print("previous state")
+previous_state_contexts = [current_state_contexts[i].copy() for i in range(mesh_world.num_envs)]
+print ("save_env")
+save_env_states(mesh_world, f"initial_state", state_output_path, context={"phase": "initial_state"})
+print ("done")
+# subgoals = None
+# try_time = 0
+# while subgoals is None and try_time < 5:
+#     try_time += 1
+#     try:
+#         content = generate_subgoals(encoded_images, subgoal_prompt)
+#         subgoals = get_subgoals(content)
+#     except Exception as e:
+#         print('catched', e)
+#         pass
 
-with open(f'{output_path}/subgoal_content.txt', 'w') as f:
-    f.write(content)
+# with open(f'{output_path}/subgoal_content.txt', 'w') as f:
+#     f.write(content)
 
+# print('subgoals: ', subgoals)
+
+# stages_text = ""
+# for goal_id, goal in enumerate(subgoals):
+#     stages_text += f'{goal_id + 1}. {goal}\n'
+
+# stage_prompt = stage_prompt.replace('<subgoal>', stages_text)
+subgoals = ['Grasp the green cucumber', 'Move the green cucumber above the basket', 'Release the green cucumber into the basket']
 print('subgoals: ', subgoals)
-
-stages_text = ""
-for goal_id, goal in enumerate(subgoals):
-    stages_text += f'{goal_id + 1}. {goal}\n'
-
-stage_prompt = stage_prompt.replace('<subgoal>', stages_text)
 
 subgoal_id = 0
 
@@ -219,40 +233,47 @@ while len(trajectory) <= args.total_steps:
         with open(f'{output_path}/{len(trajectory)}_view_{i + 1}.png', 'rb') as image_file:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
         encoded_images.append([encoded_image])
-    
-    # check success
-    try_time = 0
-    change = None
-    while change is None and try_time < 5:
-        try_time += 1
-        try:
-            content = generate_success(encoded_images, success_prompt)
-            success = get_success(content)
-            change = True
-        except Exception as e:
-            print('catched', e)
-            pass
 
-    with open(f'{output_path}/{len(trajectory)}_success_content.txt', 'w') as f:
-        f.write(content)
+    previous_state_contexts = current_state_contexts.copy()
+    current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+    save_env_states(mesh_world, f"step_{len(trajectory)}_current_state", state_output_path, context={"phase": "current_state", "step": len(trajectory)})
     
-    if success:
-        # test again to make sure
-        try_time = 0
-        change = None
-        while change is None and try_time < 5:
-            try_time += 1
-            try:
-                content = generate_success(encoded_images, success_prompt)
-                success = get_success(content)
-                change = True
-            except Exception as e:
-                print('catched', e)
-                pass
+    # # check success
+    # try_time = 0
+    # change = None
+    # while change is None and try_time < 5:
+    #     try_time += 1
+    #     try:
+    #         content = generate_success(encoded_images, success_prompt)
+    #         success = get_success(content)
+    #         change = True
+    #     except Exception as e:
+    #         print('catched', e)
+    #         pass
 
-        if success:
-            print('!!! Success !!!')
-            break
+    # with open(f'{output_path}/{len(trajectory)}_success_content.txt', 'w') as f:
+    #     f.write(content)
+    
+    # if success:
+    #     # test again to make sure
+    #     try_time = 0
+    #     change = None
+    #     while change is None and try_time < 5:
+    #         try_time += 1
+    #         try:
+    #             content = generate_success(encoded_images, success_prompt)
+    #             success = get_success(content)
+    #             change = True
+    #         except Exception as e:
+    #             print('catched', e)
+    #             pass
+
+    #     if success:
+    #         print('!!! Success !!!')
+    #         break
+    if determine_success(current_state_contexts[0]):
+        print('!!! Success !!!')
+        break
 
     encoded_images = []
     for i in range(len(current_images)):
@@ -260,20 +281,25 @@ while len(trajectory) <= args.total_steps:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
         encoded_images.append([encoded_image])
 
-    try_time = 0
-    change = None
-    while change is None and try_time < 5:
-        try_time += 1
-        try:
-            content = select_stage(encoded_images, stage_prompt, grasping=mesh_world.grasping_now)
-            stage = get_stage(content)
-            change = True
-        except Exception as e:
-            print('catched', e)
-            pass
+    current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+    save_env_states(mesh_world, f"step_{len(trajectory)}_before_stage_select", state_output_path, context={"phase": "before_stage_select", "step": len(trajectory)})
+
+
+    # try_time = 0
+    # change = None
+    # while change is None and try_time < 5:
+    #     try_time += 1
+    #     try:
+    #         content = select_stage(encoded_images, stage_prompt, grasping=mesh_world.grasping_now)
+    #         stage = get_stage(content)
+    #         change = True
+    #     except Exception as e:
+    #         print('catched', e)
+    #         pass
         
-    with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
-        f.write(content)
+    # with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
+    #     f.write(content)
+    stage = determine_subgoal_stage(current_state_contexts[0])
 
     subgoal_id = stage - 1
 
@@ -289,7 +315,11 @@ while len(trajectory) <= args.total_steps:
     # sample release action
     if mesh_world.grasping_now:
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.release()
-
+        
+        # state_after_release = get_state_context(mesh_world, env_idx=0)
+        # release = should_release(state_after_release, stage)
+        # print(f'Release decision: stage={stage}, should_release={release}')
+        
         current_robot_images, current_robot_depths = robot_images, robot_depth_images
 
         rgbmaps, depthmaps, alphamaps = gaussian_world.render(R_gaussian_fixed, T_gaussian_fixed, image_size, -FoV / 180.0 * np.pi, device, object_states=action_object_transformations[0], rotate_num=4)
@@ -329,6 +359,7 @@ while len(trajectory) <= args.total_steps:
             print('release!')
             output_actions.append('release')
             joint_angles_list, action_object_transformations, root_images, robot_depth_images = mesh_world.release(non_stop=True)
+            # current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
     
     if release:
         continue
@@ -454,7 +485,7 @@ while len(trajectory) <= args.total_steps:
                 if grasp:
                     break
 
-        elif args.try_release and mesh_world.grasping_now and subgoal_id == len(subgoals) - 1:
+        elif args.try_release and mesh_world.grasping_now and subgoal_id == NUM_SUBGOALS - 1:
             joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.sample_action_distribution_batch(samples, try_release=True)
 
             rgbmaps, depthmaps, alphamaps = [], [], []
@@ -600,6 +631,7 @@ while len(trajectory) <= args.total_steps:
     if grasp:
         print('grasp!')
         grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images = mesh_world.set_grasp_state(grasp_id)
+        save_env_states(mesh_world, f"step_{len(trajectory)}_set_grasp", state_output_path, context={"phase": "set_grasp", "step": len(trajectory)})
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images
         output_actions.append('grasp')
         output_actions.append(joint_angles_list[0].cpu().numpy().tolist())
@@ -632,6 +664,8 @@ while len(trajectory) <= args.total_steps:
     plt.imsave(f'{output_path}/{len(trajectory)}.png', images[0])
     with open(f'{output_path}/{len(trajectory)}.png', 'rb') as image_file:
         encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+    save_env_states(mesh_world, f"step_{len(trajectory)}_execute", state_output_path, context={"phase": "execute", "step": len(trajectory)})
+    print(mesh_world.grasping_now)
     
     excute_frames.append(images[0])
     trajectory.append(joint_angles_list[0])
