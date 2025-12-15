@@ -153,15 +153,18 @@ def determine_subgoal_stage(state_context):
         return 1
 
     gripper = state_context.get("gripper", {})
-    is_grasping = gripper.get("is_grasping", False)
-    gripped_object = gripper.get("gripped_object")
+    is_grasping = gripper.get("is_grasping")
+    grasped_object = gripper.get("grasped_object")
 
     objects = state_context.get("objects", {})
     cucumber = objects.get("cucumber")
     basket = objects.get("basket")
 
+    print("is_grasping: ", is_grasping)
+    print("grasped_object: ", grasped_object)
+
     # Stage 1: Not grasping cucumber
-    if not is_grasping or gripped_object != "cucumber":
+    if not is_grasping or grasped_object != "cucumber":
         return 1
 
     # If we're grasping cucumber, check if it's over basket
@@ -287,7 +290,7 @@ def compute_reward(state_context, prev_state_context, subgoal_stage):
         # Large bonus for successful grasp
         if (
             gripper.get("is_grasping", False)
-            and gripper.get("gripped_object") == "cucumber"
+            and gripper.get("grasped_object") == "cucumber"
         ):
             reward += 50.0
 

@@ -48,13 +48,13 @@ def get_state_context(mesh_world: MeshWorld, env_idx=0):
     except Exception:
         gripper_pos = None
 
-    is_gripping = False
-    gripped_object = None
+    is_grasping = False
+    grasped_object = None
     try:
         for obj in mesh_world.env.unwrapped.objects:
             try:
                 grasping = (
-                    mesh_world.agent.is_grasping(
+                    mesh_world.env.unwrapped.agent.is_grasping(
                         obj,
                         min_force=mesh_world.min_force // 2,
                         max_angle=mesh_world.max_angle,
@@ -63,18 +63,19 @@ def get_state_context(mesh_world: MeshWorld, env_idx=0):
                     .numpy()[env_idx]
                 )
                 if grasping:
-                    is_gripping = True
-                    gripped_object = obj.name
+                    print(f"{obj.name} is grasping")
+                    is_grasping = True
+                    grasped_object = obj.name
                     break
             except Exception:
                 continue
     except Exception:
-        is_gripping = False
+        is_grasping = False
 
     state["gripper"] = {
         "position": gripper_pos,
-        "is_gripping": bool(is_gripping),
-        "gripped_object": gripped_object,
+        "is_grasping": bool(is_grasping),
+        "grasped_object": grasped_object,
     }
 
     # Objects with position and bbox
