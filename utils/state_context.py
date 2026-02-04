@@ -7,26 +7,61 @@ import json
 def save_env_states(
     mesh_world, filename, env_state_log_dir, context=None, max_envs=None
 ):
-    """Write per-environment states to env_state_logs_dir/<filename>.jsonl."""
-    if mesh_world is None or env_state_log_dir is None:
+    """Write per-environment states, delegating to the MeshWorld implementation."""
+    if mesh_world is None:
         return
+    # Use MeshWorld's own save_env_states so it can apply history/previous-state logic.
+    mesh_world.save_env_states(
+        filename=filename,
+        env_state_log_dir=env_state_log_dir,
+        context=context,
+        max_envs=max_envs,
+    )
+
+
+def save_context_states(
+    contexts, filename, env_state_log_dir, context=None, max_envs=None
+):
+    """
+    Write precomputed per-environment contexts to env_state_log_dir/<filename>.jsonl.
+
+    This mirrors `save_env_states`, but instead of calling `get_state_context`
+    it uses the provided `contexts` object (e.g., a list or dict of states).
+
+    Args:
+        contexts: Sequence or mapping of per-env state dicts. If a list/tuple,
+            index is treated as env_idx. If a dict, keys are env_idx (int/str).
+        filename (str): Base filename (without extension).
+        env_state_log_dir (str): Directory to store logs.
+        context: Optional extra context metadata to include in each record.
+        max_envs (int | None): Optional cap on number of envs to write.
+    """
+    if contexts is None or env_state_log_dir is None:
+        return
+
     os.makedirs(env_state_log_dir, exist_ok=True)
-    total_envs = getattr(mesh_world, "num_envs", 1)
-    max_envs = total_envs if max_envs is None else min(max_envs, total_envs)
+
+    # Normalize contexts into (env_idx, state) pairs
+    if isinstance(contexts, dict):
+        # sort by numeric env_idx if possible
+        items = sorted(contexts.items(), key=lambda kv: int(kv[0]))
+    else:
+        # Assume list-like
+        items = list(enumerate(contexts))
+
+    if max_envs is not None:
+        items = items[: max_envs]
+
     log_path = os.path.join(env_state_log_dir, f"{filename}.jsonl")
     with open(log_path, "w") as fp:
-        for env_idx in range(max_envs):
+        for env_idx, state in items:
             record = {
-                "env_idx": env_idx,
+                "env_idx": int(env_idx),
                 "context": context or filename,
+                "state": state,
             }
-            try:
-                record["state"] = get_state_context(mesh_world, env_idx=env_idx)
-            except Exception as exc:
-                record["error"] = str(exc)
             fp.write(json.dumps(record))
             fp.write("\n")
-
 
 def get_state_context(mesh_world: MeshWorld, env_idx=0):
     """Return a JSON-serializable dict describing the current scene state.

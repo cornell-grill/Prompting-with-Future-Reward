@@ -6,6 +6,8 @@ import torch
 from mani_skill.utils.wrappers.record import RecordEpisode
 import copy
 from scipy.spatial.transform import Rotation as R
+import os
+import json
 
 
 def quaternion_multiply(a, b):
@@ -456,7 +458,7 @@ class MeshWorld:
         post_samples = samples * collision[:, None]
 
         if try_grasp:
-            grasp_object_transformations, grasp_obs, is_grasping = self.try_grasp()
+            grasp_object_transformations, grasp_obs, is_grasping, _ = self.try_grasp()
 
         if try_release:
             release_object_transformations, release_obs = self.try_release()
@@ -539,7 +541,7 @@ class MeshWorld:
         print(f'{is_grasping.sum()} grasping after trying grasping')
 
         if is_grasping.sum() == 0:
-            return None, None, is_grasping
+            return None, None, is_grasping, None
 
         all_crash_mask = np.array([False] * self.num_envs, dtype=bool)
         up_times = 0
@@ -552,9 +554,11 @@ class MeshWorld:
             up_times += 1
 
         is_grasping = np.zeros(self.num_envs, dtype=bool)
-        for obj in self.env.unwrapped.objects:
+        grasped_objects = np.full(self.num_envs, -1, dtype=int)
+        for obj_idx, obj in enumerate(self.env.unwrapped.objects):
             grasping = self.agent.is_grasping(obj, min_force=min_force, max_angle=max_angle).cpu().numpy()
             is_grasping[grasping] = True
+            grasped_objects[grasping] = obj_idx
 
         is_grasping[all_crash_mask] = False
 
@@ -563,7 +567,7 @@ class MeshWorld:
         print(f'{is_grasping.sum()} grasping after lifting')
 
         if is_grasping.sum() == 0:
-            return None, None, is_grasping
+            return None, None, is_grasping, None
 
         object_transformations = []
         for obj_id, obj in enumerate(self.env.unwrapped.objects):
@@ -585,9 +589,9 @@ class MeshWorld:
         self.try_grasp_states = self.env.unwrapped.get_state()[is_grasping]
         self.try_grasp_pos = test_firm_action[is_grasping, -1]
 
-        return action_object_transformations, obs, is_grasping
+        return action_object_transformations, obs, is_grasping, grasped_objects
     
-    def set_grasp_state(self, grasp_id, need_info=False):
+    def set_grasp_state(self, grasp_id, need_info=False, need_context=False):
         ''' set the grasp state '''
         self.env.unwrapped.set_state(self.try_grasp_states[grasp_id][None])
         self.history_states.append(self.try_grasp_states[grasp_id][None])
@@ -613,13 +617,29 @@ class MeshWorld:
             object_transformations.append(transformations)
 
         action_object_transformations = torch.stack(object_transformations, dim=0).transpose(0, 1)
+        action_object_states = torch.stack(object_states, dim=0).transpose(0, 1)
+
+        contexts = None
+        if need_context:
+            # When grasping_now is true, treat all envs as grasping for context.
+            contexts = self._build_context_from_states(
+                action_object_states, grasping_now=True
+            )
 
         if self.need_render:
             images, depth_images = self.get_image_depth()
             if need_info:
                 infos = self.get_info_by_name()
+                if need_context:
+                    return joint_angles_list, action_object_transformations, images, depth_images, infos, contexts
                 return joint_angles_list, action_object_transformations, images, depth_images, infos
+            if need_context:
+                return joint_angles_list, action_object_transformations, images, depth_images, contexts
             return joint_angles_list, action_object_transformations, images, depth_images
+
+        if need_context:
+            return joint_angles_list, action_object_transformations, contexts
+        return joint_angles_list, action_object_transformations
     
     def release(self, non_stop=False):
         ''' open the gripper to release the object '''
@@ -795,6 +815,187 @@ class MeshWorld:
 
         return infos
 
+    def _build_context_from_states(self, action_object_states, grasping_now=False):
+        """
+        Build a per-env context dict from full object states.
+        """
+        # action_object_states: [num_envs, num_objects, state_dim]
+        num_envs = action_object_states.shape[0]
+
+        # gripper_positions = self.agent.get_gripper_position().cpu().numpy()
+        gripper_positions = self.agent.tcp.pose.raw_pose.cpu().numpy()
+
+
+        # Precompute bboxes per object (same across envs)
+        obj_bboxes = []
+        for obj_idx, obj in enumerate(self.env.unwrapped.objects):
+            bbox = None
+            try:
+                col_mesh = obj.get_first_collision_mesh(to_world_frame=True)
+                if col_mesh is not None and hasattr(col_mesh, "bounds"):
+                    mins, maxs = col_mesh.bounds
+                    mins_arr = np.array([float(x) for x in mins])
+                    maxs_arr = np.array([float(x) for x in maxs])
+                    bbox = (maxs_arr - mins_arr).tolist()
+            except Exception:
+                bbox = None
+            obj_bboxes.append(bbox)
+
+        contexts = []
+        for env_idx in range(num_envs):
+            objects = {}
+            for obj_idx, obj in enumerate(self.env.unwrapped.objects):
+                name = getattr(obj, "name", None) or f"object_{obj_idx}"
+                # position from state
+                try:
+                    pos_tensor = action_object_states[env_idx, obj_idx, :3]
+                    if hasattr(pos_tensor, "detach"):
+                        pos = pos_tensor.detach().cpu().numpy().tolist()
+                    else:
+                        pos = np.array(pos_tensor).tolist()
+                except Exception:
+                    pos = None
+
+                objects[name] = {
+                    "id": obj_idx,
+                    "name": name,
+                    "position": pos,
+                    "bbox": obj_bboxes[obj_idx] if obj_idx < len(obj_bboxes) else None,
+                }
+
+            # gripper position for this env
+            gripper_pos = None
+            try:
+                if gripper_positions is not None and len(gripper_positions) > env_idx:
+                    gripper_pos = [float(x) for x in gripper_positions[env_idx][:3]]
+            except Exception:
+                gripper_pos = None
+
+            grasping_now = False
+            grasped_object = None
+            for obj in self.env.unwrapped.objects:
+                grasping = self.agent.is_grasping(obj, min_force=self.min_force, max_angle=self.max_angle).cpu().numpy()
+                if grasping[env_idx]:
+                    grasping_now = True
+                    grasped_object = obj.name
+                    break
+
+            ctx = {
+                "gripper": {
+                    "position": gripper_pos,
+                    "is_grasping": bool(grasping_now),
+                    "grasped_object": grasped_object,
+                },
+                "objects": objects,
+            }
+            contexts.append(ctx)
+
+        return contexts
+
+    def _build_state_context_from_infos(self, infos, env_idx=0):
+        state = {}
+
+        gripper_pos = None
+        try:
+            gp = infos.get("gripper_position", None)
+            if gp is not None and len(gp) > env_idx:
+                gripper_pos = [float(x) for x in gp[env_idx]]
+        except Exception:
+            gripper_pos = None
+
+        is_grasping = False
+        grasped_object = None
+        try:
+            for obj in self.env.unwrapped.objects:
+                try:
+                    grasping = (
+                        self.agent.is_grasping(
+                            obj,
+                            min_force=self.min_force // 2,
+                            max_angle=self.max_angle,
+                        )
+                        .cpu()
+                        .numpy()[env_idx]
+                    )
+                    if grasping:
+                        is_grasping = True
+                        grasped_object = obj.name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            is_grasping = False
+
+        state["gripper"] = {
+            "position": gripper_pos,
+            "is_grasping": bool(is_grasping),
+            "grasped_object": grasped_object,
+        }
+
+        # Objects with position and bbox
+        objects = {}
+        obj_poses = infos.get("object_poses", [])
+
+        for idx, obj in enumerate(self.env.unwrapped.objects):
+            entry = {"id": idx}
+
+            name = getattr(obj, "name", None)
+            entry["name"] = name
+
+            center = None
+            if idx < len(obj_poses):
+                pose_arr = obj_poses[idx]
+                if hasattr(pose_arr, "shape") and pose_arr.shape[0] > env_idx:
+                    p0 = pose_arr[env_idx]
+                    center = [float(x) for x in p0[:3]]
+
+            # bbox: from collision mesh, save l, w, h
+            bbox = None
+            col_mesh = obj.get_first_collision_mesh(to_world_frame=True)
+
+            if col_mesh is not None and hasattr(col_mesh, "bounds"):
+                mins, maxs = col_mesh.bounds
+                mins_arr = np.array([float(x) for x in mins])
+                maxs_arr = np.array([float(x) for x in maxs])
+                extents = (maxs_arr - mins_arr).tolist()
+                bbox = extents
+
+            entry["position"] = center
+            entry["bbox"] = bbox
+            objects[name] = entry
+
+        state["objects"] = objects
+
+        return state
+
+    def save_env_states(self, filename, env_state_log_dir, context=None, max_envs=None, use_previous_state=True):
+        if env_state_log_dir is None:
+            return
+
+        os.makedirs(env_state_log_dir, exist_ok=True)
+
+        if use_previous_state and getattr(self, "history_states", None):
+            self.env.unwrapped.set_state(self.history_states[-1])
+
+        infos = self.get_info()
+
+        total_envs = getattr(self, "num_envs", 1)
+        max_envs = total_envs if max_envs is None else min(max_envs, total_envs)
+        log_path = os.path.join(env_state_log_dir, f"{filename}.jsonl")
+
+        with open(log_path, "w") as fp:
+            for env_idx in range(max_envs):
+                record = {
+                    "env_idx": env_idx,
+                    "context": context or filename,
+                }
+                try:
+                    record["state"] = self._build_state_context_from_infos(infos, env_idx=env_idx)
+                except Exception as exc:
+                    record["error"] = str(exc)
+                fp.write(json.dumps(record))
+                fp.write("\n")
+
     def check_collision(self):
         ''' check collision '''
         forces = []
@@ -965,7 +1166,7 @@ class MeshWorld:
             post_samples[early_id, int(early_stop * speed):] = keep_still[:6]
 
         if try_grasp:
-            grasp_object_transformations, grasp_obs, is_grasping = self.try_grasp()
+            grasp_object_transformations, grasp_obs, is_grasping, _ = self.try_grasp()
 
         if try_release:
             release_object_transformations, release_obs = self.try_release()

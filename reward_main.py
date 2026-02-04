@@ -16,7 +16,7 @@ from gaussians.gaussian_world import GaussianWorld
 
 from pytorch3d.renderer import look_at_view_transform
 
-from utils.state_context import get_state_context, save_env_states
+from utils.state_context import *
 from utils.reward import *
 
 def robo4d_parse():
@@ -630,7 +630,8 @@ while len(trajectory) <= args.total_steps:
 
     if grasp:
         print('grasp!')
-        grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images = mesh_world.set_grasp_state(grasp_id)
+        grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images, contexts = mesh_world.set_grasp_state(grasp_id, need_context=True)
+        save_context_states(contexts, f"step_{len(trajectory)}_set_grasp_context", state_output_path, context={"phase": "set_grasp", "step": len(trajectory)})
         save_env_states(mesh_world, f"step_{len(trajectory)}_set_grasp", state_output_path, context={"phase": "set_grasp", "step": len(trajectory)})
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images
         output_actions.append('grasp')
