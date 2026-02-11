@@ -17,7 +17,7 @@ from gaussians.gaussian_world import GaussianWorld
 from pytorch3d.renderer import look_at_view_transform
 
 from utils.state_context import *
-import utils.reward as rw
+from utils.reward import *
 
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
@@ -99,7 +99,7 @@ radius = gaussian_world.radius * distance
 
 # with open(f'{output_path}/close_gripper_content.txt', 'w') as f:
 #     f.write(content)
-close_gripper = rw.KEEP_GRIPPER_CLOSED
+close_gripper = KEEP_GRIPPER_CLOSED
 
 if close_gripper:
     print('!!! Keep Gripper Closed !!!')
@@ -173,14 +173,13 @@ for i in range(len(current_images)):
         encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
     encoded_images.append([encoded_image])
 
-# print ("current state contexts")
-# current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
-# print("previous state")
-# previous_state_contexts = [current_state_contexts[i].copy() for i in range(mesh_world.num_envs)]
-# print ("save_env")
-# save_env_states(mesh_world, f"initial_state", state_output_path, context={"phase": "initial_state"})
-# print ("done")
-
+print ("current state contexts")
+current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+print("previous state")
+previous_state_contexts = [current_state_contexts[i].copy() for i in range(mesh_world.num_envs)]
+print ("save_env")
+save_env_states(mesh_world, f"initial_state", state_output_path, context={"phase": "initial_state"})
+print ("done")
 # subgoals = None
 # try_time = 0
 # while subgoals is None and try_time < 5:
@@ -202,7 +201,7 @@ for i in range(len(current_images)):
 #     stages_text += f'{goal_id + 1}. {goal}\n'
 
 # stage_prompt = stage_prompt.replace('<subgoal>', stages_text)
-subgoals = rw.subgoals
+subgoals = ['Grasp the green cucumber', 'Move the green cucumber above the basket', 'Release the green cucumber into the basket']
 print('subgoals: ', subgoals)
 
 subgoal_id = 0
@@ -272,7 +271,7 @@ while len(trajectory) <= args.total_steps:
     #     if success:
     #         print('!!! Success !!!')
     #         break
-    if rw.determine_success(current_state_contexts[0]):
+    if determine_success(current_state_contexts[0]):
         print('!!! Success !!!')
         break
 
@@ -300,7 +299,7 @@ while len(trajectory) <= args.total_steps:
         
     # with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
     #     f.write(content)
-    stage = rw.determine_subgoal_stage(current_state_contexts[0])
+    stage = determine_subgoal_stage(current_state_contexts[0])
 
     subgoal_id = stage - 1
 
@@ -486,7 +485,7 @@ while len(trajectory) <= args.total_steps:
                 if grasp:
                     break
 
-        elif args.try_release and mesh_world.grasping_now and subgoal_id == rw.NUM_SUBGOALS - 1:
+        elif args.try_release and mesh_world.grasping_now and subgoal_id == NUM_SUBGOALS - 1:
             joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.sample_action_distribution_batch(samples, try_release=True)
 
             rgbmaps, depthmaps, alphamaps = [], [], []

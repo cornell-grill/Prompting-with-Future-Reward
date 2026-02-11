@@ -134,6 +134,8 @@ KEEP_GRIPPER_CLOSED = False
 
 NUM_SUBGOALS = 3
 
+subgoals = ['Grasp the green cucumber', 'Move the green cucumber above the basket', 'Release the green cucumber into the basket']
+
 
 def determine_subgoal_stage(state_context):
     """Determine current subgoal stage based on state.
