@@ -153,6 +153,13 @@ trajectory.append(torch.tensor(initial_joint_angles))
 encoded_image = None
 
 # TODO: Implement get_initial_state_context()
+# print ("current state contexts")
+# current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+# print("previous state")
+# previous_state_contexts = [current_state_contexts[i].copy() for i in range(mesh_world.num_envs)]
+# print ("save_env")
+# save_env_states(mesh_world, f"initial_state", state_output_path, context={"phase": "initial_state"})
+# print ("done")
 
 robot_images, robot_depth_images = mesh_world.get_image_depth()
 current_robot_images, current_robot_depths = robot_images, robot_depth_images
@@ -174,14 +181,6 @@ for i in range(len(current_images)):
     with open(f'{output_path}/subgoal_view_{i + 1}.png', 'rb') as image_file:
         encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
     encoded_images.append([encoded_image])
-
-# print ("current state contexts")
-# current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
-# print("previous state")
-# previous_state_contexts = [current_state_contexts[i].copy() for i in range(mesh_world.num_envs)]
-# print ("save_env")
-# save_env_states(mesh_world, f"initial_state", state_output_path, context={"phase": "initial_state"})
-# print ("done")
 
 # subgoals = None
 # try_time = 0
@@ -240,47 +239,50 @@ while len(trajectory) <= args.total_steps:
 
     # TODO: make this really work
     # previous_state_contexts = current_state_contexts.copy()
-    current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+    # current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
     # save_env_states(mesh_world, f"step_{len(trajectory)}_current_state", state_output_path, context={"phase": "current_state", "step": len(trajectory)})
     
-    # # check success
-    # try_time = 0
-    # change = None
-    # while change is None and try_time < 5:
-    #     try_time += 1
-    #     try:
-    #         content = generate_success(encoded_images, success_prompt)
-    #         success = get_success(content)
-    #         change = True
-    #     except Exception as e:
-    #         print('catched', e)
-    #         pass
 
-    # with open(f'{output_path}/{len(trajectory)}_success_content.txt', 'w') as f:
-    #     f.write(content)
+    # TODO: START COMMENT OUT
+    # check success
+    try_time = 0
+    change = None
+    while change is None and try_time < 5:
+        try_time += 1
+        try:
+            content = generate_success(encoded_images, success_prompt)
+            success = get_success(content)
+            change = True
+        except Exception as e:
+            print('catched', e)
+            pass
+
+    with open(f'{output_path}/{len(trajectory)}_success_content.txt', 'w') as f:
+        f.write(content)
     
-    # if success:
-    #     # test again to make sure
-    #     try_time = 0
-    #     change = None
-    #     while change is None and try_time < 5:
-    #         try_time += 1
-    #         try:
-    #             content = generate_success(encoded_images, success_prompt)
-    #             success = get_success(content)
-    #             change = True
-    #         except Exception as e:
-    #             print('catched', e)
-    #             pass
+    if success:
+        # test again to make sure
+        try_time = 0
+        change = None
+        while change is None and try_time < 5:
+            try_time += 1
+            try:
+                content = generate_success(encoded_images, success_prompt)
+                success = get_success(content)
+                change = True
+            except Exception as e:
+                print('catched', e)
+                pass
 
-    #     if success:
-    #         print('!!! Success !!!')
-    #         break
+        if success:
+            print('!!! Success !!!')
+            break
+    # TODO: END COMMENT OUT
     
     # TODO: Implement real determine_success()
-    if rw.determine_success(current_state_contexts[0]):
-        print('!!! Success !!!')
-        break
+    # if rw.determine_success(current_state_contexts[0]):
+    #     print('!!! Success !!!')
+    #     break
 
     encoded_images = []
     for i in range(len(current_images)):
@@ -289,27 +291,28 @@ while len(trajectory) <= args.total_steps:
         encoded_images.append([encoded_image])
 
     # TODO: Implement get_current_state_context()
-    current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
+    # current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
     # save_env_states(mesh_world, f"step_{len(trajectory)}_before_stage_select", state_output_path, context={"phase": "before_stage_select", "step": len(trajectory)})
 
-
-    # try_time = 0
-    # change = None
-    # while change is None and try_time < 5:
-    #     try_time += 1
-    #     try:
-    #         content = select_stage(encoded_images, stage_prompt, grasping=mesh_world.grasping_now)
-    #         stage = get_stage(content)
-    #         change = True
-    #     except Exception as e:
-    #         print('catched', e)
-    #         pass
+    # TODO: START COMMENT OUT
+    try_time = 0
+    change = None
+    while change is None and try_time < 5:
+        try_time += 1
+        try:
+            content = select_stage(encoded_images, stage_prompt, grasping=mesh_world.grasping_now)
+            stage = get_stage(content)
+            change = True
+        except Exception as e:
+            print('catched', e)
+            pass
         
-    # with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
-    #     f.write(content)
+    with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
+        f.write(content)
+    # TODO: END COMMENT OUT
 
     # TODO: Implement real determine_subgoal_stage()
-    stage = rw.determine_subgoal_stage(current_state_contexts[0])
+    # stage = rw.determine_subgoal_stage(current_state_contexts[0])
 
     subgoal_id = stage - 1
 
@@ -693,7 +696,7 @@ while len(trajectory) <= args.total_steps:
     plt.imsave(f'{output_path}/{len(trajectory)}.png', images[0])
     with open(f'{output_path}/{len(trajectory)}.png', 'rb') as image_file:
         encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-    save_env_states(mesh_world, f"step_{len(trajectory)}_execute", state_output_path, context={"phase": "execute", "step": len(trajectory)})
+    # save_env_states(mesh_world, f"step_{len(trajectory)}_execute", state_output_path, context={"phase": "execute", "step": len(trajectory)})
     print(mesh_world.grasping_now)
     
     excute_frames.append(images[0])

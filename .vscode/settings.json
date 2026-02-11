@@ -1,4 +1,5 @@
 {
     "editor.formatOnSave": false,
-    "python.languageServer": "Pylance"
+    "python.languageServer": "Pylance",
+    "python.analysis.typeCheckingMode": "off"
 }

@@ -17,7 +17,9 @@ def get_view(content):
     return int(content.split('Best View:')[-1].strip(' :*.'))
 
 def get_stage(content):
-    return int(content.split('Current Stage:')[-1].strip(' :*.'))
+    part = content.split('Current Stage:')[-1]
+    stage = part.strip().splitlines()[0]
+    return int(stage)
 
 def get_grasp(content):
     answer = content.split('Grasp:')[-1].strip(' :*.').lower()
