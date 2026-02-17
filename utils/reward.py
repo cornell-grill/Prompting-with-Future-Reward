@@ -95,27 +95,21 @@ def _penalize_movement(object, prev_state_context):
     return displacement * 10.0
 
 
-def _within_object(obj, other):
+def _within_object(obj, other, first_env=False):
     """Check if obj is spatially contained within other bbox.
 
     Args:
-        obj: object dict with 'position' or 'bbox'
+        obj: object dict with 'position' (numpy array of positions per env) or 'bbox'
         other: other object dict with 'bbox'
+        first_env: if True, only check first environment; otherwise check all in parallel
 
     Returns:
-        bool: True if obj is in other, False otherwise
+        bool or np.ndarray: True/False if first_env=True, otherwise array of bools per env
     """
-    if obj is None or other is None:
-        return False
-
     obj_pos = obj.get("position")
-
     other_pos = other.get("position")
     other_bbox = other.get("bbox")
-    if other_bbox is None or obj_pos is None or other_pos is None:
-        return False
-
-    # Check if obj position is within other bbox
+    
     obj_pos = np.array(obj_pos)
     other_pos = np.array(other_pos)
     other_extents = np.array(other_bbox)
@@ -123,11 +117,22 @@ def _within_object(obj, other):
     other_min = other_pos - other_extents / 2.0
     other_max = other_pos + other_extents / 2.0
 
-    in_x = other_min[0] <= obj_pos[0] <= other_max[0]
-    in_y = other_min[1] <= obj_pos[1] <= other_max[1]
-    in_z = other_min[2] <= obj_pos[2] <= other_max[2]
-
-    return in_x and in_y and in_z
+    if first_env:
+        # Only check first environment
+        obj_pos = obj_pos[0]
+        other_min = other_min[0] if other_min.ndim > 1 else other_min
+        other_max = other_max[0] if other_max.ndim > 1 else other_max
+        
+        in_x = other_min[0] <= obj_pos[0] <= other_max[0]
+        in_y = other_min[1] <= obj_pos[1] <= other_max[1]
+        in_z = other_min[2] <= obj_pos[2] <= other_max[2]
+        return in_x and in_y and in_z
+    else:
+        # Parallel check for all environments
+        in_x = (other_min[:, 0] <= obj_pos[:, 0]) & (obj_pos[:, 0] <= other_max[:, 0])
+        in_y = (other_min[:, 1] <= obj_pos[:, 1]) & (obj_pos[:, 1] <= other_max[:, 1])
+        in_z = (other_min[:, 2] <= obj_pos[:, 2]) & (obj_pos[:, 2] <= other_max[:, 2])
+        return in_x & in_y & in_z
 
 
 KEEP_GRIPPER_CLOSED = False
@@ -151,62 +156,41 @@ def determine_subgoal_stage(state_context):
     Returns:
         int: Subgoal stage (1, 2, or 3)
     """
-    if state_context is None:
-        return 1
-
     gripper = state_context.get("gripper", {})
-    is_grasping = gripper.get("is_grasping")
-    grasped_object = gripper.get("grasped_object")
+    is_grasping = gripper.get("is_grasping")[0]
 
     objects = state_context.get("objects", {})
     cucumber = objects.get("cucumber")
     basket = objects.get("basket")
 
     print("is_grasping: ", is_grasping)
-    print("grasped_object: ", grasped_object)
 
     # Stage 1: Not grasping cucumber
-    if not is_grasping or grasped_object != "cucumber":
+    if not is_grasping:
         return 1
 
     # If we're grasping cucumber, check if it's over basket
-    if cucumber is not None and basket is not None:
-        cucumber_pos = cucumber.get("position")
+    cucumber_pos = cucumber.get("position")[0]
 
-        basket_bbox = basket.get("bbox")
-        basket_center = basket.get("position")
-        if not None in [cucumber_pos, basket_bbox, basket_center]:
-            horizontal_distance = _euclid_distance(
-                cucumber_pos[:2], basket_center[:2]  # x, y only
-            )
-            basket_radius = min(basket_bbox[0], basket_bbox[1]) / 2.0
+    basket_bbox = basket.get("bbox")
+    basket_center = basket.get("position")[0]
+    horizontal_distance = _euclid_distance(
+        cucumber_pos[:2], basket_center[:2]  # x, y only
+    )
+    basket_radius = min(basket_bbox[0], basket_bbox[1]) / 2.0
 
-            return 3 if horizontal_distance <= basket_radius and cucumber_pos[2] >= basket_center[2] else 2
-    
-    return 2
+    return 3 if horizontal_distance <= basket_radius and cucumber_pos[2] >= basket_center[2] else 2
 
 
-def determine_success(state_context):
-    """Determine if the task is successful based on the state.
-
-    Args:
-        state_context: Current state context dict
-
-    Returns:
-        bool: True if the task is successful, False otherwise
-    """
-    if state_context is None:
-        return False
-
-    cucumber = state_context.get("objects", {}).get("cucumber")
-    basket = state_context.get("objects", {}).get("basket")
-    gripper = state_context.get("gripper", {})
+def determine_success(context):
+    """Determine if the task is successful based on the state."""
+    cucumber = context.get("objects").get("cucumber")
+    basket = context.get("objects").get("basket")
+    grasping = context.get("gripper").get("is_grasping")[0]
 
     return (
-        cucumber
-        and basket
-        and _within_object(cucumber, basket)
-        and not gripper["is_grasping"]
+        _within_object(cucumber, basket, first_env=True)
+        and not grasping
     )
 
 

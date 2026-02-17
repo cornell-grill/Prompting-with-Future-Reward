@@ -152,14 +152,10 @@ trajectory.append(torch.tensor(initial_joint_angles))
 
 encoded_image = None
 
-# TODO: Implement get_initial_state_context()
-# print ("current state contexts")
-# current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
-# print("previous state")
-# previous_state_contexts = [current_state_contexts[i].copy() for i in range(mesh_world.num_envs)]
-# print ("save_env")
-# save_env_states(mesh_world, f"initial_state", state_output_path, context={"phase": "initial_state"})
-# print ("done")
+# DONE: Implement get_initial_state_context()
+context = mesh_world.get_context()
+# TODO: decide what to do with saving
+save_context(context, "initial_context", state_output_path)
 
 robot_images, robot_depth_images = mesh_world.get_image_depth()
 current_robot_images, current_robot_depths = robot_images, robot_depth_images
@@ -214,8 +210,13 @@ object_transformations = []
 while len(trajectory) <= args.total_steps:
     grasp = release = False
 
+    # DONE: Implement get_current_state_context()
+    # TODO: Figure out previous context uses
+    previous_context = context
+    context = mesh_world.get_context()
+    save_context(context, f"step_{len(trajectory)}_start", state_output_path)
+    
     # render the current state
-    # TODO: Implement get_current_state_context()
     robot_images, robot_depth_images = mesh_world.get_image_depth()
     current_robot_images, current_robot_depths = robot_images, robot_depth_images
     rgbmaps, depthmaps, alphamaps = gaussian_world.render(R_gaussian_fixed, T_gaussian_fixed, image_size, -FoV / 180.0 * np.pi, device, object_states=object_transformations, rotate_num=4)
@@ -235,15 +236,9 @@ while len(trajectory) <= args.total_steps:
     for i in range(len(current_images)):
         with open(f'{output_path}/{len(trajectory)}_view_{i + 1}.png', 'rb') as image_file:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-        encoded_images.append([encoded_image])
+        encoded_images.append([encoded_image])    
 
-    # TODO: make this really work
-    # previous_state_contexts = current_state_contexts.copy()
-    # current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
-    # save_env_states(mesh_world, f"step_{len(trajectory)}_current_state", state_output_path, context={"phase": "current_state", "step": len(trajectory)})
-    
-
-    # TODO: START COMMENT OUT
+    # NOTE: START COMMENT OUT
     # check success
     try_time = 0
     change = None
@@ -275,14 +270,15 @@ while len(trajectory) <= args.total_steps:
                 pass
 
         if success:
-            print('!!! Success !!!')
-            break
-    # TODO: END COMMENT OUT
+            print('!!! VLM says Success !!!')
+            # break
+    # NOTE: END COMMENT OUT
     
     # TODO: Implement real determine_success()
-    # if rw.determine_success(current_state_contexts[0]):
-    #     print('!!! Success !!!')
-    #     break
+    if rw.determine_success(context):
+        print('!!! Reward Function says Success !!!')
+        break
+    
 
     encoded_images = []
     for i in range(len(current_images)):
@@ -290,29 +286,25 @@ while len(trajectory) <= args.total_steps:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
         encoded_images.append([encoded_image])
 
-    # TODO: Implement get_current_state_context()
-    # current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
-    # save_env_states(mesh_world, f"step_{len(trajectory)}_before_stage_select", state_output_path, context={"phase": "before_stage_select", "step": len(trajectory)})
-
-    # TODO: START COMMENT OUT
-    try_time = 0
-    change = None
-    while change is None and try_time < 5:
-        try_time += 1
-        try:
-            content = select_stage(encoded_images, stage_prompt, grasping=mesh_world.grasping_now)
-            stage = get_stage(content)
-            change = True
-        except Exception as e:
-            print('catched', e)
-            pass
+    # NOTE: START COMMENT OUT
+    # try_time = 0
+    # change = None
+    # while change is None and try_time < 5:
+    #     try_time += 1
+    #     try:
+    #         content = select_stage(encoded_images, stage_prompt, grasping=mesh_world.grasping_now)
+    #         stage = get_stage(content)
+    #         change = True
+    #     except Exception as e:
+    #         print('catched', e)
+    #         pass
         
-    with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
-        f.write(content)
-    # TODO: END COMMENT OUT
+    # with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
+    #     f.write(content)
+    # NOTE: END COMMENT OUT
 
     # TODO: Implement real determine_subgoal_stage()
-    # stage = rw.determine_subgoal_stage(current_state_contexts[0])
+    stage = rw.determine_subgoal_stage(context)
 
     subgoal_id = stage - 1
 
@@ -328,8 +320,9 @@ while len(trajectory) <= args.total_steps:
 
     # sample release action
     if mesh_world.grasping_now:
-        # TODO: make return context
-        joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.release()
+        # DONE: make return context
+        joint_angles_list, action_object_transformations, robot_images, robot_depth_images, context = mesh_world.release(need_context=True)
+        save_context(context, f"step_{len(trajectory)}_try_release", state_output_path)
         
         # state_after_release = get_state_context(mesh_world, env_idx=0)
         # release = should_release(state_after_release, stage)
@@ -354,7 +347,7 @@ while len(trajectory) <= args.total_steps:
                 encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
             encoded_images.append([encoded_image])
 
-        # TODO: Remove this once reward implemented
+        # TODO: Remove this once reward implemented & implement determine_release()
         change = None
         release = False
         try_time = 0
@@ -367,8 +360,6 @@ while len(trajectory) <= args.total_steps:
             except Exception as e:
                 print('catched', e)
                 pass
-
-        # TODO: Implement determine_release()
         
         with open(f'{output_path}/{len(trajectory)}_release_content.txt', 'w') as f:
             f.write(content)
@@ -376,9 +367,8 @@ while len(trajectory) <= args.total_steps:
         if release:
             print('release!')
             output_actions.append('release')
-            # TODO: Make return context
+            # No context needed since we continue after
             joint_angles_list, action_object_transformations, root_images, robot_depth_images = mesh_world.release(non_stop=True)
-            # current_state_contexts = [get_state_context(mesh_world, env_idx=i) for i in range(mesh_world.num_envs)]
     
     if release:
         continue
@@ -447,8 +437,10 @@ while len(trajectory) <= args.total_steps:
         release = False
 
         if not mesh_world.grasping_now:
-            # TODO: Make return context
-            joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, grasp_object_transformations, grasp_robot_images, grasp_robot_depth_images, is_grasping = mesh_world.sample_action_distribution_batch(samples, try_grasp=True)
+            # DONE: Make return context
+            joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, grasp_object_transformations, grasp_robot_images, grasp_robot_depth_images, is_grasping, context = mesh_world.sample_action_distribution_batch(samples, try_grasp=True, need_context=True)
+            save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_grasp_sample", state_output_path)
+
             if is_grasping.sum():
                 print(f'{is_grasping.sum()} could grasp!')
                 grasp_object_transformations = grasp_object_transformations[is_grasping]
@@ -484,7 +476,7 @@ while len(trajectory) <= args.total_steps:
                             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
                         encoded_images.append(encoded_image)
 
-                    # TODO: Remove this once reward implemented
+                    # TODO: Remove this once reward implemented and implement determine_grasp()
                     change = None
                     try_time = 0
                     while change is None and try_time < 5:
@@ -496,8 +488,6 @@ while len(trajectory) <= args.total_steps:
                         except Exception as e:
                             print('catched', e)
                             pass
-
-                    # TODO: Implement determine_grasp()
                     
                     with open(f'{output_path}/{len(trajectory)}_{iteration}_grasp_{grasp_id + 1}_content.txt', 'w') as f:
                         f.write(content)
@@ -509,8 +499,9 @@ while len(trajectory) <= args.total_steps:
                     break
 
         elif args.try_release and mesh_world.grasping_now and subgoal_id == rw.NUM_SUBGOALS - 1:
-            # TODO: Make return context
-            joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.sample_action_distribution_batch(samples, try_release=True)
+            # DONE: Make return context
+            joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, try_release=True, need_context=True)
+            save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_release_sample", state_output_path)
 
             rgbmaps, depthmaps, alphamaps = [], [], []
             for release_id in range(len(release_object_transformations)):
@@ -566,18 +557,20 @@ while len(trajectory) <= args.total_steps:
 
         else:
             # TODO: Make return context
-            joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(samples)
+            joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, need_context=True)
+            save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_sample", state_output_path)
         
         robot_images = robot_images[view_id]
         robot_depth_images = robot_depth_images[view_id]
 
-        # TODO: Eventually cut down context size too.
+        # DONE: Eventually cut down context size too.
         if args.num_sample_actions > args.num_sample_vlm:
             joint_angles_list = joint_angles_list[: args.num_sample_vlm]
             action_object_transformations = action_object_transformations[: args.num_sample_vlm]
             post_samples = post_samples[: args.num_sample_vlm]
             robot_images = robot_images[: args.num_sample_vlm]
             robot_depth_images = robot_depth_images[: args.num_sample_vlm]
+            context = reduce_context(context, args.num_sample_vlm)
 
         print('step: ', len(trajectory), 'iteration: ', iteration, 'simulate time: ', time.time() - prev_time)
         prev_time = time.time()
@@ -652,25 +645,26 @@ while len(trajectory) <= args.total_steps:
         start_time = time.time()
 
     # TODO: Make return context
-    joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(means[None], non_stop=True)
+    joint_angles_list, action_object_transformations, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(means[None], non_stop=True, need_context=True)
+    save_context(context, f"step_{len(trajectory)}_final_sample", state_output_path)
 
     # save actions
     output_actions.append(joint_angles_list[0].cpu().numpy().tolist())
 
     if grasp:
         print('grasp!')
-        # TODO: Make return context
-        grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images, contexts = mesh_world.set_grasp_state(grasp_id, need_context=True)
-        # save_context_states(contexts, f"step_{len(trajectory)}_set_grasp_context", state_output_path, context={"phase": "set_grasp", "step": len(trajectory)})
-        # save_env_states(mesh_world, f"step_{len(trajectory)}_set_grasp", state_output_path, context={"phase": "set_grasp", "step": len(trajectory)})
+        # DONE: Make return context
+        grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images, context = mesh_world.set_grasp_state(grasp_id, need_context=True)
+        save_context(context, f"step_{len(trajectory)}_grasp", state_output_path)
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images
         output_actions.append('grasp')
         output_actions.append(joint_angles_list[0].cpu().numpy().tolist())
     
     if args.try_release and release:
         print('release!')
-        # TODO: Make return context
-        release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.release(non_stop=True)
+        # DONE: Make return context
+        release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images, context = mesh_world.release(non_stop=True, need_context=True)
+        save_context(context, f"step_{len(trajectory)}_release", state_output_path)
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images
         output_actions.append('release')
         output_actions.append(joint_angles_list[0].cpu().numpy().tolist())

@@ -1,150 +1,40 @@
-from meshes.mesh_world import MeshWorld
 import numpy as np
 import os
 import json
 
+def save_context(context, filename, folderpath="."):
+        """Save context dictionary to a JSON file."""
+        os.makedirs(folderpath, exist_ok=True)
+        
+        # Ensure filename ends with .json
+        if not filename.endswith(".json"):
+            filename += ".json"
+        
+        filepath = os.path.join(folderpath, filename)
+        
+        # Convert numpy arrays to lists for JSON serialization
+        def convert_to_serializable(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [convert_to_serializable(item) for item in obj]
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            return obj
+        
+        serializable_context = convert_to_serializable(context)
+        
+        with open(filepath, "w") as f:
+            json.dump(serializable_context, f, indent=2)
 
-def save_env_states(
-    mesh_world, filename, env_state_log_dir, context=None, max_envs=None
-):
-    """Write per-environment states, delegating to the MeshWorld implementation."""
-    if mesh_world is None:
-        return
-    # Use MeshWorld's own save_env_states so it can apply history/previous-state logic.
-    mesh_world.save_env_states(
-        filename=filename,
-        env_state_log_dir=env_state_log_dir,
-        context=context,
-        max_envs=max_envs,
-    )
-
-
-def save_context_states(
-    contexts, filename, env_state_log_dir, context=None, max_envs=None
-):
-    """
-    Write precomputed per-environment contexts to env_state_log_dir/<filename>.jsonl.
-
-    This mirrors `save_env_states`, but instead of calling `get_state_context`
-    it uses the provided `contexts` object (e.g., a list or dict of states).
-
-    Args:
-        contexts: Sequence or mapping of per-env state dicts. If a list/tuple,
-            index is treated as env_idx. If a dict, keys are env_idx (int/str).
-        filename (str): Base filename (without extension).
-        env_state_log_dir (str): Directory to store logs.
-        context: Optional extra context metadata to include in each record.
-        max_envs (int | None): Optional cap on number of envs to write.
-    """
-    if contexts is None or env_state_log_dir is None:
-        return
-
-    os.makedirs(env_state_log_dir, exist_ok=True)
-
-    # Normalize contexts into (env_idx, state) pairs
-    if isinstance(contexts, dict):
-        # sort by numeric env_idx if possible
-        items = sorted(contexts.items(), key=lambda kv: int(kv[0]))
-    else:
-        # Assume list-like
-        items = list(enumerate(contexts))
-
-    if max_envs is not None:
-        items = items[: max_envs]
-
-    log_path = os.path.join(env_state_log_dir, f"{filename}.jsonl")
-    with open(log_path, "w") as fp:
-        for env_idx, state in items:
-            record = {
-                "env_idx": int(env_idx),
-                "context": context or filename,
-                "state": state,
-            }
-            fp.write(json.dumps(record))
-            fp.write("\n")
-
-def get_state_context(mesh_world: MeshWorld, env_idx=0):
-    """Return a JSON-serializable dict describing the current scene state.
-
-    Args:
-            mesh_world (MeshWorld): A `MeshWorld` instance.
-            env_idx (int): Which environment index to report (default 0, the main environment).
-    """
-
-    infos = mesh_world.get_info()
-
-    state = {}
-
-    gripper_pos = None
-    try:
-        gp = infos.get("gripper_position", None)
-        if gp is not None and len(gp) > env_idx:
-            gripper_pos = [float(x) for x in gp[env_idx]]
-    except Exception:
-        gripper_pos = None
-
-    is_grasping = False
-    grasped_object = None
-    try:
-        for obj in mesh_world.env.unwrapped.objects:
-            try:
-                grasping = (
-                    mesh_world.env.unwrapped.agent.is_grasping(
-                        obj,
-                        min_force=mesh_world.min_force // 2,
-                        max_angle=mesh_world.max_angle,
-                    )
-                    .cpu()
-                    .numpy()[env_idx]
-                )
-                if grasping:
-                    print(f"{obj.name} is grasping")
-                    is_grasping = True
-                    grasped_object = obj.name
-                    break
-            except Exception:
-                continue
-    except Exception:
-        is_grasping = False
-
-    state["gripper"] = {
-        "position": gripper_pos,
-        "is_grasping": bool(is_grasping),
-        "grasped_object": grasped_object,
-    }
-
-    # Objects with position and bbox
-    objects = {}
-    obj_poses = infos.get("object_poses", [])
-
-    for idx, obj in enumerate(mesh_world.env.unwrapped.objects):
-        entry = {"id": idx}
-
-        name = getattr(obj, "name", None)
-        entry["name"] = name
-
-        center = None
-        if idx < len(obj_poses):
-            pose_arr = obj_poses[idx]
-            if hasattr(pose_arr, "shape") and pose_arr.shape[0] > env_idx:
-                p0 = pose_arr[env_idx]
-                center = [float(x) for x in p0[:3]]
-
-        # bbox: from collision mesh, save l, w, h
-        bbox = None
-        col_mesh = obj.get_first_collision_mesh(to_world_frame=True)
-
-        if col_mesh is not None and hasattr(col_mesh, "bounds"):
-            mins, maxs = col_mesh.bounds
-            mins_arr = np.array([float(x) for x in mins])
-            maxs_arr = np.array([float(x) for x in maxs])
-            extents = (maxs_arr - mins_arr).tolist()
-            bbox = extents
-
-        entry["position"] = center
-        entry["bbox"] = bbox
-        objects[name] = entry
-
-    state["objects"] = objects
-
-    return state
+def reduce_context(context, upto_env):
+    """Reduce context dictionary to only include envs up to upto_envs"""
+    context["gripper"]["position"] = context["gripper"]["position"][:upto_env]
+    context["gripper"]["is_grasping"] = context["gripper"]["is_grasping"][:upto_env]
+    for obj_name in context["objects"]:
+        context["objects"][obj_name]["position"] = context["objects"][obj_name]["position"][:upto_env]
+    return context

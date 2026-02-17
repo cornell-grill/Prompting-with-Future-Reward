@@ -1,5 +1,9 @@
 {
     "editor.formatOnSave": false,
     "python.languageServer": "Pylance",
-    "python.analysis.typeCheckingMode": "off"
+    "python.analysis.typeCheckingMode": "off",
+    "search.quickOpen.history.filterSortOrder": "default",
+    "explorer.sortOrder": "modified",
+    "explorer.sortOrderReverse": true,
+    "editor.stickyScroll.defaultModel": "foldingProviderModel"
 }
