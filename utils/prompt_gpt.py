@@ -2,6 +2,7 @@ import requests
 import os
 import numpy as np
 import base64
+import re
 from utils.api_key import api_key
 
 headers = {
@@ -11,15 +12,27 @@ headers = {
 
 
 def get_answer(content):
-    return int(content.split('Best Result:')[-1].split('Confidence:')[0].strip(' :*.'))
+    # Extract text after 'Best Result:'
+    result_part = content.split('Best Result:')[-1]
+    # Extract first number in the result part
+    match = re.search(r'\d+', result_part)
+    if match:
+        return int(match.group())
+    raise ValueError(f"Could not extract integer from: {result_part}")
 
 def get_view(content):
-    return int(content.split('Best View:')[-1].strip(' :*.'))
+    view_part = content.split('Best View:')[-1]
+    match = re.search(r'\d+', view_part)
+    if match:
+        return int(match.group())
+    raise ValueError(f"Could not extract view integer from: {view_part}")
 
 def get_stage(content):
     part = content.split('Current Stage:')[-1]
-    stage = part.strip().splitlines()[0]
-    return int(stage)
+    match = re.search(r'\d+', part)
+    if match:
+        return int(match.group())
+    raise ValueError(f"Could not extract stage integer from: {part}")
 
 def get_grasp(content):
     answer = content.split('Grasp:')[-1].strip(' :*.').lower()

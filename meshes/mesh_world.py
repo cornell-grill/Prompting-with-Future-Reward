@@ -1098,11 +1098,15 @@ class MeshWorld:
 
     # START CONTEXT BUILDING ------------------------------------------------------
     def get_context(self, is_grasping=None):
+        """ Get the context of the current state, including gripper pose and object poses.
+            Use at the last time the state is updated, to make sure the context is consistent with the state.
+            
+            is_grasping: (num_envs,) bool array indicating whether each environment is grasping an object. If None, use self.grasping_now.
+        """
         gripper_poses = self.agent.tcp.pose.raw_pose.cpu().numpy()
         gripper_pos = gripper_poses[:, :3].astype(float)
         
-        # TODO: Fix grasping. Either be global with Grasping now, or take is_grasping array as argument
-        
+        # DONE: Fix grasping. Either be global with Grasping now, or take is_grasping array as argument
         if is_grasping is not None:
             grasping = np.array(is_grasping, dtype=bool)
         else:
