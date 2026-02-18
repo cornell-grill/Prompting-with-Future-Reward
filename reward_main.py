@@ -158,6 +158,7 @@ encoded_image = None
 # DONE: Implement get_initial_state_context()
 if args.use_reward:
     context = mesh_world.get_context()
+    prev_context = context
     # TODO: decide what to do with saving
     save_context(context, "initial_context", state_output_path)
 
@@ -217,9 +218,9 @@ while len(trajectory) <= args.total_steps:
     grasp = release = False
 
     # DONE: Implement get_current_state_context()
-    # TODO: Figure out previous context uses
+    # DONE: Figure out where previous context is needed & how
     if args.use_reward:
-        previous_context = context
+        prev_context = context
         context = mesh_world.get_context()
         save_context(context, f"step_{len(trajectory)}_start", state_output_path)
     
@@ -245,26 +246,9 @@ while len(trajectory) <= args.total_steps:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
         encoded_images.append([encoded_image])    
 
-    # NOTE: START COMMENT OUT
-    # TODO: change so that it uses args.use_reward, not both
+    # DONE: change so that it uses args.use_reward, not both
     # check success
-    try_time = 0
-    change = None
-    while change is None and try_time < 5:
-        try_time += 1
-        try:
-            content = generate_success(encoded_images, success_prompt)
-            success = get_success(content)
-            change = True
-        except Exception as e:
-            print('catched', e)
-            pass
-
-    with open(f'{output_path}/{len(trajectory)}_success_content.txt', 'w') as f:
-        f.write(content)
-    
-    if success:
-        # test again to make sure
+    if not args.use_reward:
         try_time = 0
         change = None
         while change is None and try_time < 5:
@@ -277,15 +261,31 @@ while len(trajectory) <= args.total_steps:
                 print('catched', e)
                 pass
 
+        with open(f'{output_path}/{len(trajectory)}_success_content.txt', 'w') as f:
+            f.write(content)
+        
         if success:
-            print('!!! VLM says Success !!!')
-            # break
-    # NOTE: END COMMENT OUT
-    
-    # TODO: Implement real determine_success()
-    if rw.determine_success(context):
-        print('!!! Reward Function says Success !!!')
-        break
+            # test again to make sure
+            try_time = 0
+            change = None
+            while change is None and try_time < 5:
+                try_time += 1
+                try:
+                    content = generate_success(encoded_images, success_prompt)
+                    success = get_success(content)
+                    change = True
+                except Exception as e:
+                    print('catched', e)
+                    pass
+
+            if success:
+                print('!!! VLM says Success !!!')
+                break
+    else:
+        # TODO: Debug determine_success ordering (see text4)
+        if rw.determine_success(context):
+            print('!!! Reward Function says Success !!!')
+            break
     
 
     encoded_images = []
@@ -310,8 +310,8 @@ while len(trajectory) <= args.total_steps:
         with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
             f.write(content)
     else:
-        # TODO: Implement real determine_subgoal_stage()
-        stage = rw.determine_subgoal_stage(context)
+        # DONE: Implement working determine_subgoal_stage()
+        stage = rw.determine_stage(context)
 
     subgoal_id = stage - 1
 
@@ -331,6 +331,7 @@ while len(trajectory) <= args.total_steps:
         if not args.use_reward:
             joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.release()
         else:
+            prev_context = context
             joint_angles_list, action_object_transformations, robot_images, robot_depth_images, context = mesh_world.release(need_context=True)
             save_context(context, f"step_{len(trajectory)}_try_release", state_output_path)
         
@@ -353,22 +354,25 @@ while len(trajectory) <= args.total_steps:
                 encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
             encoded_images.append([encoded_image])
 
-        # TODO: Remove this once reward implemented & implement determine_release()
-        change = None
-        release = False
-        try_time = 0
-        while change is None and try_time < 5:
-            try_time += 1
-            try:
-                content = generate_release(encoded_images, release_prompt)
-                release = get_release(content)
-                change = True
-            except Exception as e:
-                print('catched', e)
-                pass
-        
-        with open(f'{output_path}/{len(trajectory)}_release_content.txt', 'w') as f:
-            f.write(content)
+        # DONE: Remove this once reward implemented & implement determine_release()
+        if not args.use_reward:
+            change = None
+            release = False
+            try_time = 0
+            while change is None and try_time < 5:
+                try_time += 1
+                try:
+                    content = generate_release(encoded_images, release_prompt)
+                    release = get_release(content)
+                    change = True
+                except Exception as e:
+                    print('catched', e)
+                    pass
+            
+            with open(f'{output_path}/{len(trajectory)}_release_content.txt', 'w') as f:
+                f.write(content)
+        else:
+            release = rw.should_release(context, stage)
 
         if release:
             print('release!')
@@ -447,6 +451,7 @@ while len(trajectory) <= args.total_steps:
             if not args.use_reward:
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, grasp_object_transformations, grasp_robot_images, grasp_robot_depth_images, is_grasping = mesh_world.sample_action_distribution_batch(samples, try_grasp=True)
             else:
+                prev_context = context
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, grasp_object_transformations, grasp_robot_images, grasp_robot_depth_images, is_grasping, context = mesh_world.sample_action_distribution_batch(samples, try_grasp=True, need_context=True)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_grasp_sample", state_output_path)
 
@@ -485,21 +490,24 @@ while len(trajectory) <= args.total_steps:
                             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
                         encoded_images.append(encoded_image)
 
-                    # TODO: Remove this once reward implemented and implement determine_grasp()
-                    change = None
-                    try_time = 0
-                    while change is None and try_time < 5:
-                        try_time += 1
-                        try:
-                            content = generate_grasp(encoded_images, grasp_prompt)
-                            grasp = get_grasp(content)
-                            change = True
-                        except Exception as e:
-                            print('catched', e)
-                            pass
-                    
-                    with open(f'{output_path}/{len(trajectory)}_{iteration}_grasp_{grasp_id + 1}_content.txt', 'w') as f:
-                        f.write(content)
+                    # DONE: Remove this once reward implemented and implement determine_grasp()
+                    if not args.use_reward:
+                        change = None
+                        try_time = 0
+                        while change is None and try_time < 5:
+                            try_time += 1
+                            try:
+                                content = generate_grasp(encoded_images, grasp_prompt)
+                                grasp = get_grasp(content)
+                                change = True
+                            except Exception as e:
+                                print('catched', e)
+                                pass
+                        
+                        with open(f'{output_path}/{len(trajectory)}_{iteration}_grasp_{grasp_id + 1}_content.txt', 'w') as f:
+                            f.write(content)
+                    else:
+                        grasp = rw.should_grasp(context, prev_context, stage, grasp_id)
 
                     if grasp:
                         means = post_samples[is_grasping][grasp_id]
@@ -512,6 +520,8 @@ while len(trajectory) <= args.total_steps:
             if not args.use_reward:
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.sample_action_distribution_batch(samples, try_release=True)
             else:
+                base_reward = rw.compute_reward(context, prev_context, stage)
+                prev_context = mesh_world.get_context()
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, try_release=True, need_context=True)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_release_sample", state_output_path)
 
@@ -535,43 +545,58 @@ while len(trajectory) <= args.total_steps:
             robot_mask = np.where((np.any(release_robot_images != 0, axis=-1)) * (release_robot_depth_images[..., 0] < depthmaps), 1, 0)
             images = np.where(robot_mask[:, :, :, :, None], release_robot_images, rgbmaps)
 
-            # TODO: This section can probable be entirely redone. Just remove image stuff & compute best reward instances.
-            processes = []
-            queue = multiprocessing.Queue()
-            best_of_each_group = []
-            for release_id in range(len(release_object_transformations)):
-                img_views = images[:, release_id]
-                encoded_images = []
-                for idx, img in enumerate(img_views):
-                    plt.imsave(f'{output_path}/{len(trajectory)}_{iteration}_release_{release_id + 1}_view_{idx + 1}.png', img)
-                    with open(f'{output_path}/{len(trajectory)}_{iteration}_release_{release_id + 1}_view_{idx + 1}.png', 'rb') as image_file:
-                        encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
-                    encoded_images.append([encoded_image])
+            # TODO: This section can probable be entirely redone. Just remove image stuff & compute best reward instances. Ask about it first
+            # TODO: Do this by finding current context reward, doing actions, then finding where reward increses
+            if not args.use_reward:
+                processes = []
+                queue = multiprocessing.Queue()
+                best_of_each_group = []
+                for release_id in range(len(release_object_transformations)):
+                    img_views = images[:, release_id]
+                    encoded_images = []
+                    for idx, img in enumerate(img_views):
+                        plt.imsave(f'{output_path}/{len(trajectory)}_{iteration}_release_{release_id + 1}_view_{idx + 1}.png', img)
+                        with open(f'{output_path}/{len(trajectory)}_{iteration}_release_{release_id + 1}_view_{idx + 1}.png', 'rb') as image_file:
+                            encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+                        encoded_images.append([encoded_image])
 
-                p = multiprocessing.Process(target=prompt_release_helper, args=(release_id, queue, encoded_images, release_prompt, args))
-                processes.append(p)
-                p.start()
+                    p = multiprocessing.Process(target=prompt_release_helper, args=(release_id, queue, encoded_images, release_prompt, args))
+                    processes.append(p)
+                    p.start()
 
-            for p in processes:
-                p.join()
+                for p in processes:
+                    p.join()
 
-            for p in processes:
-                release_id, release, content = queue.get()
+                for p in processes:
+                    release_id, release, content = queue.get()
 
-                with open(f'{output_path}/{len(trajectory)}_{iteration}_{release_id + 1}_release.txt', 'w') as f:
-                    f.write(content)
-                if release:
-                    means = post_samples[release_id]
+                    with open(f'{output_path}/{len(trajectory)}_{iteration}_{release_id + 1}_release.txt', 'w') as f:
+                        f.write(content)
+                    if release:
+                        means = post_samples[release_id]
+                        print('release!')
+                        break
+            else:
+                # TODO: This can be greatly improved. Does it need parallelization? Should we wait until greatest reward improvement, or first one?
+                release_rewards = []
+                for release_id in range(len(release_object_transformations)):
+                    reward = rw.compute_reward(context, prev_context, stage, release_id)
+                    release_rewards.append(reward)
+                release_rewards = np.array(release_rewards)
+                best_release_id = np.argmax(release_rewards)
+                if release_rewards[best_release_id] > base_reward:
+                    means = post_samples[best_release_id]
                     print('release!')
                     break
             if release:
                 break
 
         else:
-            # TODO: Make return context
+            # DONE: Make return context
             if not args.use_reward:
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(samples)
             else:
+                prev_context = context
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, need_context=True)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_sample", state_output_path)
         
@@ -585,7 +610,9 @@ while len(trajectory) <= args.total_steps:
             post_samples = post_samples[: args.num_sample_vlm]
             robot_images = robot_images[: args.num_sample_vlm]
             robot_depth_images = robot_depth_images[: args.num_sample_vlm]
+            # TODO: figure out how this is removing successful grasps
             if args.use_reward:
+                prev_context = reduce_context(prev_context, args.num_sample_vlm)
                 context = reduce_context(context, args.num_sample_vlm)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_vlm_sample", state_output_path)
 
@@ -632,39 +659,51 @@ while len(trajectory) <= args.total_steps:
         prev_time = time.time()
 
         # TODO: Eventually remove entire section once reward implemented. Replace with best n instances.
-        processes = []
-        queue = multiprocessing.Queue()
-        best_of_each_group = []
+        if not args.use_reward:
+            processes = []
+            queue = multiprocessing.Queue()
+            best_of_each_group = []
+            
+            for group_id in range(group_num):
+                group_prompt = prompt[group_id * args.num_sample_each_group: (group_id + 1) * args.num_sample_each_group]
+
+                p = multiprocessing.Process(target=prompt_helper, args=(group_id, queue, group_prompt, system_prompt, mesh_world.grasping_now))
+                processes.append(p)
+                p.start()
+
+            for p in processes:
+                p.join()
+
+            for p in processes:
+                group_id, answer, content = queue.get()
+                best_id = answer - 1
+                best_of_each_group.append(group_id * args.num_sample_each_group + best_id)
+
+                with open(f'{output_path}/{len(trajectory)}_{iteration}_{group_id}_response.txt', 'w') as f:
+                    f.write(content)
+            
+            elite_samples = post_samples[best_of_each_group]
+        else:
+            # TODO: Should I parallelize this? Currently, it might favor biased reward functions
+            rewards = []
+            for sample_id in range(len(post_samples)):
+                reward = rw.compute_reward(context, prev_context, stage, sample_id)
+                rewards.append(reward)
+
+            best_rewards = np.argsort(rewards)[-group_num:]
+            elite_samples = post_samples[best_rewards]
         
-        for group_id in range(group_num):
-            group_prompt = prompt[group_id * args.num_sample_each_group: (group_id + 1) * args.num_sample_each_group]
-
-            p = multiprocessing.Process(target=prompt_helper, args=(group_id, queue, group_prompt, system_prompt, mesh_world.grasping_now))
-            processes.append(p)
-            p.start()
-
-        for p in processes:
-            p.join()
-
-        for p in processes:
-            group_id, answer, content = queue.get()
-            best_id = answer - 1
-            best_of_each_group.append(group_id * args.num_sample_each_group + best_id)
-
-            with open(f'{output_path}/{len(trajectory)}_{iteration}_{group_id}_response.txt', 'w') as f:
-                f.write(content)
-        
-        elite_samples = post_samples[best_of_each_group]
         means = np.mean(elite_samples, axis=0)
         covariance = np.cov(elite_samples, rowvar=False)
 
         print('iteration: ', iteration, 'prompt time: ', time.time() - prev_time)
         start_time = time.time()
 
-    # TODO: Make return context
+    # DONE: Make return context
     if not args.use_reward:
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(means[None])
     else:
+        prev_context = context
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(means[None], non_stop=True, need_context=True)
         save_context(context, f"step_{len(trajectory)}_final_sample", state_output_path)
 
@@ -677,6 +716,7 @@ while len(trajectory) <= args.total_steps:
         if not args.use_reward:
             grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images = mesh_world.set_grasp_state(grasp_id)
         else:
+            prev_context = context
             grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images, context = mesh_world.set_grasp_state(grasp_id, need_context=True)
             save_context(context, f"step_{len(trajectory)}_grasp", state_output_path)
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = grasp_joint_angles_list, grasp_action_object_transformations, grasp_robot_images, grasp_robot_depth_images
@@ -689,6 +729,7 @@ while len(trajectory) <= args.total_steps:
         if not args.use_reward:
             release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.release(non_stop=True)
         else:
+            prev_context = context
             release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images, context = mesh_world.release(non_stop=True, need_context=True)
             save_context(context, f"step_{len(trajectory)}_release", state_output_path)
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images = release_joint_angles_list, release_action_object_transformations, release_robot_images, release_robot_depth_images
@@ -723,8 +764,9 @@ while len(trajectory) <= args.total_steps:
 
     if args.replan and replan_time < max_replan:
         if mesh_world.object_drop:
-            # TODO: Just make current context = previous context
+            # DONE: Just make current context = previous context
             print('object drop replan!')
+            context = prev_context
             trajectory = trajectory[:-1]
             excute_frames = excute_frames[:-1]
             output_actions = output_actions[:-1]
