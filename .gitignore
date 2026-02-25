@@ -3,3 +3,4 @@ results/
 gaussians/output/
 gaussians/data/
 .vscode/
+utils/api_key.py
