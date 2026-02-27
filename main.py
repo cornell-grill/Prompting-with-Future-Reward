@@ -16,8 +16,8 @@ from gaussians.gaussian_world import GaussianWorld
 
 from pytorch3d.renderer import look_at_view_transform
 
-from utils.state_context import *
-import utils.reward as rw
+from reward.reward_helpers import save_context, reduce_context
+import reward.reward as rw
 
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
@@ -37,6 +37,7 @@ def robo4d_parse():
     parser.add_argument("--try_release", action="store_true")
     parser.add_argument("--replan", action="store_true")
     parser.add_argument("--use_reward", action="store_true")
+    parser.add_argument("--reward_function", type=str, default="cucumber_basket")
     return parser
 
 parser = robo4d_parse()
@@ -282,7 +283,6 @@ while len(trajectory) <= args.total_steps:
                 print('!!! VLM says Success !!!')
                 break
     else:
-        # TODO: Debug determine_success ordering (see text4)
         if rw.determine_success(context):
             print('!!! Reward Function says Success !!!')
             break

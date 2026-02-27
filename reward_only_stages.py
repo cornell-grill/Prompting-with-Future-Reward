@@ -19,8 +19,8 @@ from gaussians.gaussian_world import GaussianWorld
 
 from pytorch3d.renderer import look_at_view_transform
 
-from utils.state_context import *
-import utils.reward as rw
+from reward.reward_helpers import *
+import reward.reward as rw
 
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
