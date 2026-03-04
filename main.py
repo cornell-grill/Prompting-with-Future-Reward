@@ -17,7 +17,7 @@ from gaussians.gaussian_world import GaussianWorld
 from pytorch3d.renderer import look_at_view_transform
 
 from reward.reward_helpers import save_context, reduce_context
-import reward.reward as rw
+from reward.reward_manager import RewardManager
 
 def robo4d_parse():
     parser = argparse.ArgumentParser(description="Robo4D")
@@ -37,11 +37,18 @@ def robo4d_parse():
     parser.add_argument("--try_release", action="store_true")
     parser.add_argument("--replan", action="store_true")
     parser.add_argument("--use_reward", action="store_true")
-    parser.add_argument("--reward_function", type=str, default="cucumber_basket")
+    parser.add_argument("--reward_name", type=str, default="cucumber_basket")
     return parser
 
 parser = robo4d_parse()
 args = parser.parse_args()
+
+if args.use_reward:
+    reward_manager = RewardManager(args.reward_name)
+    # TODO: make this generative
+    reward_manager.load_context()
+    if reward_manager.context is None:
+        raise RuntimeError("context.py not available yet.")
 
 # render settings
 image_size = args.image_size
@@ -49,10 +56,9 @@ znear = 0.01
 zfar = 100
 FoV = 60
 
-if args.scene_name is None:
-    output_path = os.path.join('results/naive_reward', f'{args.scene_id}/{args.name}')
-else:
-    output_path = os.path.join('results/naive_reward', f'{args.scene_name}/{args.name}')
+name_prefix = 'reward_' if args.use_reward else ''
+output_path = os.path.join('results', f'{args.instruction}/{args.scene_name}/{name_prefix}{args.name}')
+
 state_output_path = os.path.join(output_path, 'states')
 if not os.path.exists(state_output_path):
     os.makedirs(state_output_path)
@@ -103,7 +109,7 @@ if not args.use_reward:
     with open(f'{output_path}/close_gripper_content.txt', 'w') as f:
         f.write(content)
 else:
-    close_gripper = rw.KEEP_GRIPPER_CLOSED
+    close_gripper = reward_manager.context.KEEP_GRIPPER_CLOSED
 
 if close_gripper:
     print('!!! Keep Gripper Closed !!!')
@@ -207,8 +213,9 @@ if not args.use_reward:
 
     stage_prompt = stage_prompt.replace('<subgoal>', stages_text)
 else:
-    subgoals = rw.subgoals      # TODO: implement compute_subgoals()
+    subgoals = reward_manager.context.subgoals      # TODO: implement compute_subgoals()
 print('subgoals: ', subgoals)
+num_subgoals = len(subgoals)
 
 subgoal_id = 0
 
@@ -283,7 +290,7 @@ while len(trajectory) <= args.total_steps:
                 print('!!! VLM says Success !!!')
                 break
     else:
-        if rw.determine_success(context):
+        if reward_manager.context.determine_success(context):
             print('!!! Reward Function says Success !!!')
             break
     
@@ -294,7 +301,7 @@ while len(trajectory) <= args.total_steps:
             encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
         encoded_images.append([encoded_image])
 
-    if args.use_reward:
+    if not args.use_reward:
         try_time = 0
         change = None
         while change is None and try_time < 5:
@@ -310,8 +317,14 @@ while len(trajectory) <= args.total_steps:
         with open(f'{output_path}/{len(trajectory)}_stage_content.txt', 'w') as f:
             f.write(content)
     else:
-        # DONE: Implement working determine_subgoal_stage()
-        stage = rw.determine_stage(context)
+        stage = reward_manager.context.determine_stage(context)
+        
+        reward_manager.update_stage(stage)
+        # TODO : Remove this once reward generation is implemented
+        if reward_manager.rw is None:
+            raise RuntimeError(
+                f"Reward file reward_{stage}.py not available."
+            )
 
     subgoal_id = stage - 1
 
@@ -372,7 +385,7 @@ while len(trajectory) <= args.total_steps:
             with open(f'{output_path}/{len(trajectory)}_release_content.txt', 'w') as f:
                 f.write(content)
         else:
-            release = rw.should_release(context, stage)
+            release = reward_manager.rw.should_release(context, stage)
 
         if release:
             print('release!')
@@ -507,7 +520,7 @@ while len(trajectory) <= args.total_steps:
                         with open(f'{output_path}/{len(trajectory)}_{iteration}_grasp_{grasp_id + 1}_content.txt', 'w') as f:
                             f.write(content)
                     else:
-                        grasp = rw.should_grasp(context, prev_context, stage, grasp_id)
+                        grasp = reward_manager.rw.should_grasp(context, prev_context, stage, grasp_id)
 
                     if grasp:
                         means = post_samples[is_grasping][grasp_id]
@@ -515,12 +528,12 @@ while len(trajectory) <= args.total_steps:
                 if grasp:
                     break
 
-        elif args.try_release and mesh_world.grasping_now and subgoal_id == rw.NUM_SUBGOALS - 1:
+        elif args.try_release and mesh_world.grasping_now and subgoal_id == num_subgoals - 1:
             # DONE: Make return context
             if not args.use_reward:
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images = mesh_world.sample_action_distribution_batch(samples, try_release=True)
             else:
-                base_reward = rw.compute_reward(context, prev_context, stage)
+                base_reward = reward_manager.rw.compute_reward(context, prev_context, stage)
                 prev_context = mesh_world.get_context()
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, try_release=True, need_context=True)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_release_sample", state_output_path)
@@ -580,7 +593,7 @@ while len(trajectory) <= args.total_steps:
                 # TODO: This can be greatly improved. Does it need parallelization? Should we wait until greatest reward improvement, or first one?
                 release_rewards = []
                 for release_id in range(len(release_object_transformations)):
-                    reward = rw.compute_reward(context, prev_context, stage, release_id)
+                    reward = reward_manager.rw.compute_reward(context, prev_context, stage, release_id)
                     release_rewards.append(reward)
                 release_rewards = np.array(release_rewards)
                 best_release_id = np.argmax(release_rewards)
@@ -687,7 +700,7 @@ while len(trajectory) <= args.total_steps:
             # TODO: Should I parallelize this? Currently, it might favor biased reward functions
             rewards = []
             for sample_id in range(len(post_samples)):
-                reward = rw.compute_reward(context, prev_context, stage, sample_id)
+                reward = reward_manager.rw.compute_reward(context, prev_context, stage, sample_id)
                 rewards.append(reward)
 
             best_rewards = np.argsort(rewards)[-group_num:]
