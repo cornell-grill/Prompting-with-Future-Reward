@@ -1,6 +1,8 @@
 __pycache__/
 results/
 gaussians/output/
+gaussians/output
 gaussians/data/
+gaussians/data
 .vscode/
 utils/api_key.py
