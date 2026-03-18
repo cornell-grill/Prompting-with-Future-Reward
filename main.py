@@ -205,8 +205,6 @@ if not args.use_reward:
     with open(f'{output_path}/subgoal_content.txt', 'w') as f:
         f.write(content)
 
-    print('subgoals: ', subgoals)
-
     stages_text = ""
     for goal_id, goal in enumerate(subgoals):
         stages_text += f'{goal_id + 1}. {goal}\n'
@@ -714,7 +712,7 @@ while len(trajectory) <= args.total_steps:
 
     # DONE: Make return context
     if not args.use_reward:
-        joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(means[None])
+        joint_angles_list, action_object_transformations, robot_images, robot_depth_images = mesh_world.sample_action_distribution_batch(means[None], non_stop=True)
     else:
         prev_context = context
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(means[None], non_stop=True, need_context=True)
