@@ -167,6 +167,12 @@ def quaternion_diff_to_euler(q1_batch, q2_batch, order='xyz', degrees=False):
     Returns:
         np.ndarray: shape (N, 3), each row is the Euler angles representing q_rel = q2 * q1^-1.
     """
+    q1_batch = np.asarray(q1_batch)
+    q2_batch = np.asarray(q2_batch)
+
+    if q1_batch.ndim == 1:
+        q1_batch = np.broadcast_to(q1_batch[None, :], q2_batch.shape)
+
     assert q1_batch.shape == q2_batch.shape
     assert q1_batch.shape[1] == 4
 
@@ -180,6 +186,41 @@ def quaternion_diff_to_euler(q1_batch, q2_batch, order='xyz', degrees=False):
     # Relative rotation r_rel = r2 * r1^-1
     r_rel = r2 * r1.inv()
     return r_rel.as_euler(order, degrees=degrees)
+
+
+def quaternion_wxyz_to_rotvec_batch(quats_wxyz, eps=1e-8, degrees=False):
+    """Convert batched quaternions (w, x, y, z) to deterministic rotvecs.
+
+    Canonicalizes sign so w >= 0 (q and -q represent the same rotation),
+    which avoids run-to-run axis flips in axis-angle representation.
+
+    Args:
+        quats_wxyz: Batched quaternions in (w, x, y, z) order.
+        eps: Numerical stability threshold for zero-rotation cases.
+        degrees: If True, return the rotation magnitude in degrees instead of radians.
+    """
+    q = np.array(quats_wxyz, dtype=np.float64)
+
+    # Normalize first for numerical stability
+    q = q / np.linalg.norm(q, axis=1, keepdims=True)
+
+    # Canonicalize sign: enforce w >= 0 to pick a single representative
+    flip_mask = q[:, 0] < 0
+    q[flip_mask] = -q[flip_mask]
+
+    w = np.clip(q[:, 0], -1.0, 1.0)
+    xyz = q[:, 1:4]
+    xyz_norm = np.linalg.norm(xyz, axis=1)
+
+    # angle in [0, pi]
+    angle = 2.0 * np.arctan2(xyz_norm, w)
+
+    rotvec = np.zeros_like(xyz)
+    non_zero = xyz_norm > eps
+    rotvec[non_zero] = xyz[non_zero] / xyz_norm[non_zero, None] * angle[non_zero, None]
+    if degrees:
+        rotvec = np.degrees(rotvec)
+    return rotvec.astype(np.float32)
 
 
 class MeshWorld:
@@ -290,10 +331,15 @@ class MeshWorld:
         
         # self.object_offset = []
         self.object_init_state = []
+        self.object_init_quaternions = []
         for obj_id, obj in enumerate(self.env.unwrapped.objects):
             object_state = obj.get_state()[0]
             self.object_init_state.append(object_state)
             self.grasping.append(False)
+            
+            # Store initial quaternion for rotation tracking
+            init_quat = object_state[3:7].cpu().numpy()  # (w, x, y, z)
+            self.object_init_quaternions.append(init_quat)
 
         self.done = False
         self.min_force = 0.1
@@ -1116,12 +1162,33 @@ class MeshWorld:
         for obj_idx, obj in enumerate(self.env.unwrapped.objects):
             name = getattr(obj, "name", None) or f"object_{obj_idx}"
 
-            obj_positions = obj.get_state()[:, :3].cpu().numpy()
+            obj_state = obj.get_state()
+            obj_positions = obj_state[:, :3].cpu().numpy()
+            obj_quaternions = obj_state[:, 3:7].cpu().numpy()
+            
+            init_quat = torch.tensor(self.object_init_quaternions[obj_idx], dtype=torch.float32)
+            curr_quats = torch.tensor(obj_quaternions, dtype=torch.float32)
 
+            if init_quat[0] < 0:
+                init_quat = -init_quat
+            dots = torch.sum(curr_quats * init_quat.unsqueeze(0), dim=1)
+            curr_quats[dots < 0] = -curr_quats[dots < 0]
+            
+            rotation_euler = quaternion_diff_to_euler(
+                init_quat.cpu().numpy(),
+                curr_quats.cpu().numpy(),
+                order='xyz',
+                degrees=True,
+            )
+            
             objects[name] = {
                 "id": obj_idx,
                 "name": name,
                 "position": obj_positions,
+                # "initial_quaternion_wxyz": np.repeat(init_quat.cpu().numpy()[None, :], self.num_envs, axis=0),
+                # "current_quaternion_wxyz": curr_quats.cpu().numpy(),
+                # "relative_quaternion_wxyz": rotation_quats.cpu().numpy(),
+                "rotation_euler": rotation_euler,
                 "bbox": self.obj_bboxes[obj_idx],
             }
 
