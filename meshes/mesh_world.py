@@ -561,6 +561,139 @@ class MeshWorld:
             return joint_angles_list, action_object_transformations, post_samples, context
 
         return joint_angles_list, action_object_transformations, post_samples
+    
+    def sample_action_batch(self, samples, substeps=10, non_stop=False, need_context=False):
+        """Rollout 7D delta actions (6 pose + 1 gripper) in parallel.
+
+        The gripper dimension (col 6) is sampled as a continuous Gaussian value
+        but thresholded to binary {-1, +1} before being passed to physics.
+        CEM statistics (mean, cov) are computed on the continuous values in the
+        returned post_samples, so the Gaussian distribution remains well-defined.
+
+        Args:
+            samples: (N, 7) array of normalized action samples.
+                     Columns 0-2: translation, 3-5: rotation, 6: gripper (continuous).
+            substeps: Number of simulation substeps per action (action duration).
+            non_stop: If True, commit the action to history (execute for real).
+            need_context: If True, return context dict for reward computation.
+
+        Returns:
+            joint_angles_list: Final joint positions per env.
+            action_object_transformations: Object transforms after action.
+            post_samples: Collision-weighted continuous samples (N, 7) for CEM refit.
+            context (optional): State context dict when need_context=True.
+        """
+        samples = np.clip(samples, -10, 10)
+
+        pose_delta_scales = np.array([0.1, 0.1, 0.1, 0.2, 0.2, 0.2])
+
+        if non_stop:
+            samples = samples.repeat(self.num_envs, 0)
+
+        gripper_binary = np.where(samples[:, 6:7] > 0, 1.0, -1.0)
+        sampled_delta_actions = np.concatenate(
+            [samples[:, :6] * pose_delta_scales, gripper_binary], axis=-1,
+        )
+
+        self.env.unwrapped.set_state(self.history_states[-1])
+
+        collision = np.ones(self.num_envs, dtype=np.float32)
+        all_crash_mask = np.array([False] * self.num_envs, dtype=bool)
+        all_collision_mask = np.array([False] * self.num_envs, dtype=bool)
+
+        frozen_actions = np.zeros((len(samples), 7))
+        frozen_actions[:, 6] = gripper_binary[:, 0]
+
+        prev_qpos = self.agent.robot.get_qpos()
+        joint_angles_list = prev_qpos
+
+        for i in range(substeps):
+            obs, _, _, _, _ = self.env.step(sampled_delta_actions)
+
+            current_qpos = self.agent.robot.get_qpos()
+            crash_mask = (
+                (np.min(current_qpos[:, :7].cpu().numpy() - self.joint_limits[0], axis=-1) < self.joint_threshold)
+                | (np.min(self.joint_limits[1] - current_qpos[:, :7].cpu().numpy(), axis=-1) < self.joint_threshold)
+            )
+            new_crash = crash_mask & (~all_crash_mask)
+            collision[new_crash] = i / substeps
+            joint_angles_list[new_crash] = prev_qpos[new_crash]
+            sampled_delta_actions[new_crash] = frozen_actions[new_crash]
+            all_crash_mask[new_crash] = True
+
+            collision_force = self.check_collision()
+            collision_mask = (collision_force > self.min_force).astype(bool)
+            new_collision = collision_mask & (~all_collision_mask)
+            collision[new_collision] = i / substeps
+            joint_angles_list[new_collision] = prev_qpos[new_collision]
+            sampled_delta_actions[new_collision] = frozen_actions[new_collision]
+            all_collision_mask[new_collision] = True
+
+            prev_qpos = current_qpos
+
+        if all_crash_mask.sum() == self.num_envs:
+            self.all_crash = True
+
+        settle_steps = 20
+        for _ in range(settle_steps):
+            obs, _, _, _, _ = self.env.step(None)
+
+        obs = copy.deepcopy(obs)
+        joint_angles_list[collision == 1] = self.agent.robot.get_qpos()[collision == 1]
+
+        object_transformations = []
+        for obj_id, obj in enumerate(self.env.unwrapped.objects):
+            states = obj.get_state()
+            transformations = states.clone()
+            transformations[:, :3] = transformations[:, :3] - self.object_init_state[obj_id][:3]
+            new_quaternions = transformations[:, 3:7]
+            old_quaternion = self.object_init_state[obj_id][3:7]
+            rotation_quaternions = compute_quaternion_rotation_batch(old_quaternion, new_quaternions)
+            transformations[:, 3:7] = rotation_quaternions
+            object_transformations.append(transformations)
+
+        action_object_transformations = torch.stack(object_transformations, dim=0).transpose(0, 1)
+
+        if non_stop:
+            self.history_states.append(self.env.unwrapped.get_state()[0][None])
+
+            is_grasping_any = False
+            for obj in self.env.unwrapped.objects:
+                grasping = self.agent.is_grasping(
+                    obj, min_force=self.min_force // 2, max_angle=self.max_angle
+                ).cpu().numpy()[0]
+                if grasping:
+                    is_grasping_any = True
+                    break
+
+            if is_grasping_any and not self.grasping_now:
+                self.grasping_now = True
+                self.grasping_pos = 1.0
+            elif not is_grasping_any and self.grasping_now:
+                self.object_drop = True
+                self.prev_grasping_pos = self.grasping_pos
+                self.grasping_pos = -1.0
+                self.grasping_now = False
+
+            if need_context:
+                context = self.get_context()
+                return joint_angles_list, action_object_transformations, context
+
+            return joint_angles_list, action_object_transformations
+
+        post_samples = samples * collision[:, None]
+
+        if need_context:
+            actual_is_grasping = np.zeros(self.num_envs, dtype=bool)
+            for obj in self.env.unwrapped.objects:
+                grasping = self.agent.is_grasping(
+                    obj, min_force=self.min_force // 2, max_angle=self.max_angle
+                ).cpu().numpy()
+                actual_is_grasping[grasping] = True
+            context = self.get_context(actual_is_grasping)
+            return joint_angles_list, action_object_transformations, post_samples, context
+
+        return joint_angles_list, action_object_transformations, post_samples
 
     def reset(self):
         self.env.reset()

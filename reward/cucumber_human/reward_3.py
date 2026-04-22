@@ -64,7 +64,8 @@ def compute_reward(context, prev_context, stage, env_id=0):
 
     # Subgoal 3: Release cucumber in basket
     # Large bonus if cucumber is in basket
-    if within_object(cucumber, basket, first_env=True):
+    within_mask = within_object(cucumber, basket, first_env=False)
+    if within_mask[env_id]:
         reward += 100.0
 
     # Bonus for release (not grasping)
