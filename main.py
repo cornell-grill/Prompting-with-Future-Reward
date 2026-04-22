@@ -165,6 +165,8 @@ encoded_image = None
 # DONE: Implement get_initial_state_context()
 if args.use_reward:
     context = mesh_world.get_context()
+    reward_manager.set_initial_context(context)
+    reward_manager.attach_initial_state(context)
     prev_context = context
     # TODO: decide what to do with saving
     save_context(context, "initial_context", state_output_path)
@@ -228,6 +230,7 @@ while len(trajectory) <= args.total_steps:
     if args.use_reward:
         prev_context = context
         context = mesh_world.get_context()
+        reward_manager.attach_initial_state(context)
         save_context(context, f"step_{len(trajectory)}_start", state_output_path)
     
     # render the current state
@@ -533,7 +536,9 @@ while len(trajectory) <= args.total_steps:
             else:
                 base_reward = reward_manager.rw.compute_reward(context, prev_context, stage)
                 prev_context = mesh_world.get_context()
+                reward_manager.attach_initial_state(prev_context)
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, release_object_transformations, release_robot_images, release_robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, try_release=True, need_context=True)
+                reward_manager.attach_initial_state(context)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_release_sample", state_output_path)
 
             rgbmaps, depthmaps, alphamaps = [], [], []
@@ -609,6 +614,7 @@ while len(trajectory) <= args.total_steps:
             else:
                 prev_context = context
                 joint_angles_list, action_object_transformations, post_samples, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(samples, need_context=True)
+                reward_manager.attach_initial_state(context)
                 save_context(context, f"step_{len(trajectory)}_iteration_{iteration}_sample", state_output_path)
         
         robot_images = robot_images[view_id]
@@ -716,6 +722,7 @@ while len(trajectory) <= args.total_steps:
     else:
         prev_context = context
         joint_angles_list, action_object_transformations, robot_images, robot_depth_images, context = mesh_world.sample_action_distribution_batch(means[None], non_stop=True, need_context=True)
+        reward_manager.attach_initial_state(context)
         save_context(context, f"step_{len(trajectory)}_final_sample", state_output_path)
 
     # save actions

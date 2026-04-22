@@ -192,7 +192,7 @@ def cem_step(mesh_world, reward_manager, context, prev_context, stage, args):
                 samples, substeps=substeps, need_context=True,
             )
         )
-
+        reward_manager.attach_initial_state(cur_context)
         rewards = np.array([
             reward_manager.rw.compute_reward(cur_context, prev_context, stage, i)
             for i in range(len(post_samples))
@@ -218,7 +218,7 @@ def cem_step(mesh_world, reward_manager, context, prev_context, stage, args):
     joint_angles, action_obj_transforms, new_context = mesh_world.sample_action_batch(
         means[None], substeps=substeps, non_stop=True, need_context=True,
     )
-
+    reward_manager.attach_initial_state(new_context)
     return new_context, prev_context, joint_angles, action_obj_transforms
 
 
@@ -265,6 +265,8 @@ def main():
     trajectory.append(torch.tensor(initial_qpos))
 
     context = mesh_world.get_context()
+    reward_manager.set_initial_context(context)
+    reward_manager.attach_initial_state(context)
     prev_context = context
     save_context(context, "initial_context", state_output_path)
 
@@ -274,6 +276,7 @@ def main():
     while len(trajectory) <= args.total_steps:
         prev_context = context
         context = mesh_world.get_context()
+        reward_manager.attach_initial_state(context)
         save_context(context, f"step_{len(trajectory)}_start", state_output_path)
 
         if reward_manager.context.determine_success(context):
