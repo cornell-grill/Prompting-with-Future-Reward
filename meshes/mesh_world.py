@@ -562,7 +562,14 @@ class MeshWorld:
 
         return joint_angles_list, action_object_transformations, post_samples
     
-    def sample_action_batch(self, samples, substeps=10, non_stop=False, need_context=False):
+    def sample_action_batch(
+        self,
+        samples,
+        substeps=10,
+        non_stop=False,
+        need_context=False,
+        return_images=False,
+    ):
         """Rollout 7D delta actions (6 pose + 1 gripper) in parallel.
 
         The gripper dimension (col 6) is sampled as a continuous Gaussian value
@@ -576,11 +583,13 @@ class MeshWorld:
             substeps: Number of simulation substeps per action (action duration).
             non_stop: If True, commit the action to history (execute for real).
             need_context: If True, return context dict for reward computation.
+            return_images: If True, return robot RGB/depth images from the rollout obs.
 
         Returns:
             joint_angles_list: Final joint positions per env.
             action_object_transformations: Object transforms after action.
             post_samples: Collision-weighted continuous samples (N, 7) for CEM refit.
+            images, depth_images (optional): Robot render output when return_images=True.
             context (optional): State context dict when need_context=True.
         """
         samples = np.clip(samples, -10, 10)
@@ -675,6 +684,13 @@ class MeshWorld:
                 self.grasping_pos = -1.0
                 self.grasping_now = False
 
+            if return_images:
+                images, depth_images = self.render_image_depth(obs)
+                if need_context:
+                    context = self.get_context()
+                    return joint_angles_list, action_object_transformations, images, depth_images, context
+                return joint_angles_list, action_object_transformations, images, depth_images
+
             if need_context:
                 context = self.get_context()
                 return joint_angles_list, action_object_transformations, context
@@ -691,7 +707,14 @@ class MeshWorld:
                 ).cpu().numpy()
                 actual_is_grasping[grasping] = True
             context = self.get_context(actual_is_grasping)
+            if return_images:
+                images, depth_images = self.render_image_depth(obs)
+                return joint_angles_list, action_object_transformations, post_samples, images, depth_images, context
             return joint_angles_list, action_object_transformations, post_samples, context
+
+        if return_images:
+            images, depth_images = self.render_image_depth(obs)
+            return joint_angles_list, action_object_transformations, post_samples, images, depth_images
 
         return joint_angles_list, action_object_transformations, post_samples
 
@@ -1258,7 +1281,10 @@ class MeshWorld:
                 "bbox": self.obj_bboxes[obj_idx],
             }
 
-        contexts = {"gripper": {"position": gripper_pos, "is_grasping": grasping}, "objects": objects}
+        contexts = {
+            "gripper": {"position": gripper_pos, "is_grasping": grasping},
+            "objects": objects,
+        }
 
         return contexts
     # END CONTEXT BUILDING ------------------------------------------------------
